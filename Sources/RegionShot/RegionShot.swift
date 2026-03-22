@@ -226,27 +226,28 @@ private enum RegionShotError: LocalizedError {
 }
 
 private let usageText = """
-regionshot wraps native macOS `screencapture` and `ScreenCaptureKit`.
-It captures either a screen rectangle or app windows on macOS.
+regionshot = macOS screenshot wrapper around native `screencapture` and `ScreenCaptureKit`.
 
-Usage:
-  regionshot <x> <y> <width> <height> [--app <name-or-pid>] [--output /path/to/file.png]
-  regionshot --x <x> --y <y> --width <width> --height <height> [--app <name-or-pid>] [--output /path/to/file.png]
-  regionshot --app <name-or-pid> [--list-windows]
-  regionshot --app <name-or-pid> --frontmost-window [--window-crop x,y,width,height] [--output /path/to/file.png]
-  regionshot --app <name-or-pid> --window-index <n> [--window-crop x,y,width,height] [--output /path/to/file.png]
-  regionshot --app <name-or-pid> --window-name <title> [--window-crop x,y,width,height] [--output /path/to/file.png]
-  regionshot --help
+Output:
+  capture mode -> writes a PNG file, then prints the final path to stdout
+  inspect mode -> prints JSON to stdout
+  errors -> stderr, non-zero exit
 
-Modes:
-  rectangle capture: screen rect, optionally filtered to one app
-  app inspection: `--app ... --list-windows` returns JSON with indices, titles, and bounds
-  specific window capture: frontmost window, indexed window, or named window for one app
-  in-window crop: `--window-crop x,y,width,height` is relative to the selected window's top-left in points
+Forms:
+  regionshot X Y WIDTH HEIGHT [--app APP] [--output FILE]
+  regionshot --x X --y Y --width WIDTH --height HEIGHT [--app APP] [--output FILE]
+  regionshot --app APP
+  regionshot --app APP --frontmost-window [--window-crop X,Y,W,H] [--output FILE]
+  regionshot --app APP --window-index N [--window-crop X,Y,W,H] [--output FILE]
+  regionshot --app APP --window-name TITLE [--window-crop X,Y,W,H] [--output FILE]
 
-LLM-friendly behavior:
-  `regionshot --app "System Settings"` defaults to the same JSON window listing as `--list-windows`.
-  Window indices are frontmost-first within the target app.
+Rules:
+  `--app` accepts app name, bundle id, or pid
+  `--app` alone == inspect mode == same as `--list-windows`
+  window list JSON includes frontmost-first indices, titles, and bounds
+  `--window-crop` is relative to the selected window's top-left in points
+  rectangle mode without `--app` forwards to `screencapture -R`
+  rectangle mode with `--app` includes only that app, even if covered by other windows
 """
 
 private func parse(arguments: [String]) throws -> CommandBehavior {

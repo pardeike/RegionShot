@@ -21,7 +21,7 @@ regionshot 120 240 800 600 --app 12345
 regionshot 120 240 800 600 --output ~/Desktop/region.png
 ```
 
-Running the binary without parameters prints a concise self-description and usage summary.
+Running the binary without parameters prints a condensed LLM-oriented capability summary: output semantics, accepted command forms, and the key rules that affect capture behavior.
 
 Without `--app`, the rectangle is forwarded directly to macOS `screencapture -R` as `x,y,width,height`.
 
