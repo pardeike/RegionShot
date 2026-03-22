@@ -1,4 +1,6 @@
 import Darwin
+import AppKit
+import ApplicationServices
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -20,6 +22,9 @@ struct RegionShot {
             case .listWindows(let command):
                 let json = try await listWindows(using: command)
                 print(json)
+            case .inspectAccessibility(let command):
+                let json = try await inspectAccessibility(using: command)
+                print(json)
             }
         } catch let error as RegionShotError {
             writeStandardError("error: \(error.localizedDescription)\n")
@@ -36,6 +41,7 @@ private enum CommandBehavior: Sendable {
     case showHelp
     case capture(CaptureCommand)
     case listWindows(ListWindowsCommand)
+    case inspectAccessibility(AccessibilityCommand)
 }
 
 private struct CaptureCommand: Sendable {
@@ -48,6 +54,28 @@ private struct CaptureCommand: Sendable {
 
 private struct ListWindowsCommand: Sendable {
     let applicationSelector: ApplicationSelector
+}
+
+private struct AccessibilityCommand: Sendable {
+    let applicationSelector: ApplicationSelector
+    let windowSelection: WindowSelection?
+    let mode: AccessibilityMode
+}
+
+private struct AccessibilitySelector: Sendable {
+    let role: String?
+    let subrole: String?
+    let title: String?
+    let identifier: String?
+    let elementDescription: String?
+
+    var isEmpty: Bool {
+        role == nil &&
+        subrole == nil &&
+        title == nil &&
+        identifier == nil &&
+        elementDescription == nil
+    }
 }
 
 private struct CaptureRegion: Sendable {
@@ -73,6 +101,15 @@ private struct WindowCropRect: Sendable {
 
     var rect: CGRect {
         CGRect(x: x, y: y, width: width, height: height)
+    }
+}
+
+private struct WindowPoint: Sendable {
+    let x: Int
+    let y: Int
+
+    var point: CGPoint {
+        CGPoint(x: x, y: y)
     }
 }
 
@@ -104,6 +141,13 @@ private enum WindowSelection: Sendable {
     case name(String)
 }
 
+private enum AccessibilityMode: Sendable {
+    case listElements
+    case elementAt(WindowPoint)
+    case pressAt(WindowPoint)
+    case pressElement(AccessibilitySelector)
+}
+
 private struct ParsedArguments {
     let region: CaptureRegion?
     let values: [String: String]
@@ -121,6 +165,12 @@ private struct AppWindowCatalog {
     let windows: [CatalogWindow]
 }
 
+private struct AutomationApplication {
+    let name: String
+    let bundleIdentifier: String
+    let processID: pid_t
+}
+
 private struct CatalogWindow {
     let index: Int
     let windowID: CGWindowID
@@ -130,6 +180,20 @@ private struct CatalogWindow {
     let isOnScreen: Bool
     let isActive: Bool
     let scWindow: SCWindow
+}
+
+private struct AccessibilityWindowCatalog {
+    let application: AutomationApplication
+    let windows: [AccessibilityCatalogWindow]
+}
+
+private struct AccessibilityCatalogWindow {
+    let index: Int
+    let title: String?
+    let frame: CGRect
+    let isFocused: Bool
+    let isMain: Bool
+    let element: AXUIElement
 }
 
 private struct WindowSnapshot {
@@ -175,17 +239,98 @@ private struct JSONRect: Encodable {
     }
 }
 
+private struct JSONPoint: Encodable {
+    let x: Double
+    let y: Double
+
+    init(_ point: CGPoint) {
+        x = point.x
+        y = point.y
+    }
+}
+
+private struct AccessibilityTreeResponse: Encodable {
+    let application: WindowListApplication
+    let window: AccessibilityWindowEntry
+    let tree: AccessibilityElementResponse
+}
+
+private struct AccessibilityHitResponse: Encodable {
+    let application: WindowListApplication
+    let window: AccessibilityWindowEntry
+    let point: JSONPoint
+    let screenPoint: JSONPoint
+    let hit: AccessibilityElementResponse
+    let ancestors: [AccessibilityElementResponse]
+}
+
+private struct AccessibilitySelectorResponse: Encodable {
+    let role: String?
+    let subrole: String?
+    let title: String?
+    let identifier: String?
+    let description: String?
+}
+
+private struct AccessibilityPressResponse: Encodable {
+    let application: WindowListApplication
+    let window: AccessibilityWindowEntry
+    let mode: String
+    let action: String
+    let selector: AccessibilitySelectorResponse?
+    let point: JSONPoint?
+    let screenPoint: JSONPoint?
+    let matched: AccessibilityElementResponse
+    let pressed: AccessibilityElementResponse
+    let ancestors: [AccessibilityElementResponse]
+}
+
+private struct AccessibilityWindowEntry: Encodable {
+    let index: Int
+    let title: String?
+    let frame: JSONRect
+    let isFocused: Bool
+    let isMain: Bool
+}
+
+private struct AccessibilityElementResponse: Encodable {
+    let role: String?
+    let subrole: String?
+    let title: String?
+    let description: String?
+    let identifier: String?
+    let frame: JSONRect?
+    let actions: [String]
+    let childCount: Int?
+    let truncated: Bool?
+    let children: [AccessibilityElementResponse]?
+}
+
+private struct AccessibilityElementCandidate {
+    let element: AXUIElement
+    let depth: Int
+    let role: String?
+    let subrole: String?
+    let title: String?
+    let description: String?
+    let identifier: String?
+    let frame: CGRect?
+    let actions: [String]
+}
+
 private enum RegionShotError: LocalizedError {
     case invalidArguments(String)
     case invalidInteger(flag: String, value: String)
     case invalidRegion(String)
     case unsupportedFeature(String)
     case capturePermissionDenied
+    case accessibilityPermissionDenied
     case applicationNotFound(String)
     case ambiguousApplication(String)
     case windowNotFound(String)
     case ambiguousWindow(String)
     case captureFailed(String)
+    case accessibilityQueryFailed(String)
     case encodeFailed(String)
 
     var errorDescription: String? {
@@ -199,7 +344,9 @@ private enum RegionShotError: LocalizedError {
         case .unsupportedFeature(let message):
             return message
         case .capturePermissionDenied:
-            return "Screen Recording permission is required for capture. Grant access and run the command again."
+            return "Screen Recording permission is required for app/window inspection and capture. Grant access and run the command again."
+        case .accessibilityPermissionDenied:
+            return "Accessibility permission is required for accessibility inspection and actions. Grant access and run the command again."
         case .applicationNotFound(let message):
             return message
         case .ambiguousApplication(let message):
@@ -210,6 +357,8 @@ private enum RegionShotError: LocalizedError {
             return message
         case .captureFailed(let message):
             return message
+        case .accessibilityQueryFailed(let message):
+            return message
         case .encodeFailed(let message):
             return message
         }
@@ -219,7 +368,7 @@ private enum RegionShotError: LocalizedError {
         switch self {
         case .invalidArguments, .invalidInteger, .invalidRegion:
             return 64
-        case .unsupportedFeature, .capturePermissionDenied, .applicationNotFound, .ambiguousApplication, .windowNotFound, .ambiguousWindow, .captureFailed, .encodeFailed:
+        case .unsupportedFeature, .capturePermissionDenied, .accessibilityPermissionDenied, .applicationNotFound, .ambiguousApplication, .windowNotFound, .ambiguousWindow, .captureFailed, .accessibilityQueryFailed, .encodeFailed:
             return 1
         }
     }
@@ -240,12 +389,36 @@ Forms:
   regionshot --app APP --frontmost-window [--window-crop X,Y,W,H] [--output FILE]
   regionshot --app APP --window-index N [--window-crop X,Y,W,H] [--output FILE]
   regionshot --app APP --window-name TITLE [--window-crop X,Y,W,H] [--output FILE]
+  regionshot --app APP --list-elements
+  regionshot --app APP --press --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
+  regionshot --app APP --press-at X,Y
+  regionshot --app APP --element-at X,Y
+  regionshot --app APP --frontmost-window --list-elements
+  regionshot --app APP --window-index N --list-elements
+  regionshot --app APP --window-name TITLE --list-elements
+  regionshot --app APP --frontmost-window --press --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
+  regionshot --app APP --window-index N --press --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
+  regionshot --app APP --window-name TITLE --press --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
+  regionshot --app APP --frontmost-window --press-at X,Y
+  regionshot --app APP --window-index N --press-at X,Y
+  regionshot --app APP --window-name TITLE --press-at X,Y
+  regionshot --app APP --frontmost-window --element-at X,Y
+  regionshot --app APP --window-index N --element-at X,Y
+  regionshot --app APP --window-name TITLE --element-at X,Y
 
 Rules:
   `--app` accepts app name, bundle id, or pid
   `--app` alone == inspect mode == same as `--list-windows`
   window list JSON includes frontmost-first indices, titles, and bounds
   `--window-crop` is relative to the selected window's top-left in points
+  prefer selector-based `--press` (alias: `--press-element`); use `--press-at` as fallback
+  accessibility modes default to the app's focused window, then main window, then first window
+  `--frontmost-window`, `--window-index`, or `--window-name` can override that default for accessibility modes
+  `--element-at` and `--press-at` use window-relative x,y coordinates in points
+  selector fields: `--role`, `--subrole`, `--title`, `--identifier`, `--description`
+  `--title`, `--identifier`, and `--description` prefer exact matches, then fall back to case-insensitive contains
+  capture and ScreenCaptureKit window listing require Screen Recording permission
+  accessibility inspection and actions require Accessibility permission
   rectangle mode without `--app` forwards to `screencapture -R`
   rectangle mode with `--app` includes only that app, even if covered by other windows
 """
@@ -265,7 +438,36 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
     let windowSelection = try parseWindowSelection(parsed)
     let windowCrop = try parseWindowCrop(parsed.values["--window-crop"])
     let wantsWindowList = parsed.flags.contains("--list-windows")
+    let wantsElementList = parsed.flags.contains("--list-elements")
+    let wantsPressElement = parsed.flags.contains("--press") || parsed.flags.contains("--press-element")
+    let elementPoint = try parseWindowPoint(parsed.values["--element-at"], flag: "--element-at")
+    let pressPoint = try parseWindowPoint(parsed.values["--press-at"], flag: "--press-at")
+    let selector = parseAccessibilitySelector(from: parsed.values)
     let outputPath = parsed.values["--output"]
+
+    let accessibilityModeCount = [
+        wantsElementList ? 1 : 0,
+        elementPoint != nil ? 1 : 0,
+        wantsPressElement ? 1 : 0,
+        pressPoint != nil ? 1 : 0,
+    ].reduce(0, +)
+
+    if accessibilityModeCount > 1 {
+        throw RegionShotError.invalidArguments("Choose only one of `--list-elements`, `--element-at`, `--press`/`--press-element`, or `--press-at`.")
+    }
+
+    let accessibilityMode: AccessibilityMode?
+    if wantsElementList {
+        accessibilityMode = .listElements
+    } else if let elementPoint {
+        accessibilityMode = .elementAt(elementPoint)
+    } else if wantsPressElement {
+        accessibilityMode = .pressElement(selector)
+    } else if let pressPoint {
+        accessibilityMode = .pressAt(pressPoint)
+    } else {
+        accessibilityMode = nil
+    }
 
     if windowSelection != nil, applicationSelector == nil {
         throw RegionShotError.invalidArguments("Window selection requires `--app <name-or-pid>`.")
@@ -279,8 +481,16 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
         throw RegionShotError.invalidArguments("`--list-windows` requires `--app <name-or-pid>`.")
     }
 
+    if accessibilityMode != nil, applicationSelector == nil {
+        throw RegionShotError.invalidArguments("Accessibility inspection and actions require `--app <name-or-pid>`.")
+    }
+
     if wantsWindowList, windowSelection != nil {
         throw RegionShotError.invalidArguments("`--list-windows` cannot be combined with `--frontmost-window`, `--window-index`, or `--window-name`.")
+    }
+
+    if wantsWindowList, accessibilityMode != nil {
+        throw RegionShotError.invalidArguments("`--list-windows` cannot be combined with accessibility inspection or action flags.")
     }
 
     if wantsWindowList, windowCrop != nil {
@@ -293,6 +503,30 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
 
     if wantsWindowList, outputPath != nil {
         throw RegionShotError.invalidArguments("`--list-windows` prints JSON to stdout and does not use `--output`.")
+    }
+
+    if accessibilityMode != nil, parsed.region != nil {
+        throw RegionShotError.invalidArguments("Accessibility inspection and actions cannot be combined with rectangle coordinates.")
+    }
+
+    if accessibilityMode != nil, windowCrop != nil {
+        throw RegionShotError.invalidArguments("Accessibility inspection and actions cannot be combined with `--window-crop`.")
+    }
+
+    if accessibilityMode != nil, outputPath != nil {
+        throw RegionShotError.invalidArguments("Accessibility inspection and actions print JSON to stdout and do not use `--output`.")
+    }
+
+    if wantsPressElement, selector.isEmpty {
+        throw RegionShotError.invalidArguments("`--press` (alias: `--press-element`) requires at least one selector field: `--role`, `--subrole`, `--title`, `--identifier`, or `--description`.")
+    }
+
+    if !wantsPressElement, !selector.isEmpty {
+        throw RegionShotError.invalidArguments("Selector fields require `--press` or `--press-element`.")
+    }
+
+    if pressPoint != nil, !selector.isEmpty {
+        throw RegionShotError.invalidArguments("`--press-at` cannot be combined with selector fields.")
     }
 
     if parsed.region != nil, windowSelection != nil {
@@ -311,10 +545,20 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
         throw RegionShotError.invalidArguments("`--output` requires a capture mode. Use rectangle coordinates or one of `--frontmost-window`, `--window-index`, or `--window-name`. `--app` alone lists windows as JSON.")
     }
 
-    if wantsWindowList || (applicationSelector != nil && parsed.region == nil && windowSelection == nil) {
+    if wantsWindowList || (applicationSelector != nil && parsed.region == nil && windowSelection == nil && accessibilityMode == nil) {
         return .listWindows(
             ListWindowsCommand(
                 applicationSelector: applicationSelector!
+            )
+        )
+    }
+
+    if let accessibilityMode {
+        return .inspectAccessibility(
+            AccessibilityCommand(
+                applicationSelector: applicationSelector!,
+                windowSelection: windowSelection,
+                mode: accessibilityMode
             )
         )
     }
@@ -383,10 +627,10 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         let argument = arguments[index]
 
         switch argument {
-        case "--help", "-h", "--list-windows", "--frontmost-window":
+        case "--help", "-h", "--list-windows", "--frontmost-window", "--list-elements", "--press", "--press-element":
             flags.insert(argument)
             index += 1
-        case "--x", "--y", "--width", "--height", "--output", "--app", "--window-index", "--window-name", "--window-crop":
+        case "--x", "--y", "--width", "--height", "--output", "--app", "--window-index", "--window-name", "--window-crop", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description":
             let valueIndex = index + 1
             guard valueIndex < arguments.count else {
                 throw RegionShotError.invalidArguments("Missing value for \(argument).")
@@ -484,6 +728,50 @@ private func parseWindowCrop(_ rawValue: String?) throws -> WindowCropRect? {
     }
 
     return crop
+}
+
+private func parseWindowPoint(_ rawValue: String?, flag: String) throws -> WindowPoint? {
+    guard let rawValue else {
+        return nil
+    }
+
+    let components = rawValue
+        .split(separator: ",", omittingEmptySubsequences: false)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    guard components.count == 2 else {
+        throw RegionShotError.invalidArguments("`\(flag)` must use `x,y`.")
+    }
+
+    let point = try WindowPoint(
+        x: parseInteger(components[0], flag: flag),
+        y: parseInteger(components[1], flag: flag)
+    )
+
+    guard point.x >= 0, point.y >= 0 else {
+        throw RegionShotError.invalidArguments("`\(flag)` requires non-negative x and y coordinates.")
+    }
+
+    return point
+}
+
+private func parseAccessibilitySelector(from values: [String: String]) -> AccessibilitySelector {
+    AccessibilitySelector(
+        role: normalizedArgumentValue(values["--role"]),
+        subrole: normalizedArgumentValue(values["--subrole"]),
+        title: normalizedArgumentValue(values["--title"]),
+        identifier: normalizedArgumentValue(values["--identifier"]),
+        elementDescription: normalizedArgumentValue(values["--description"])
+    )
+}
+
+private func normalizedArgumentValue(_ value: String?) -> String? {
+    guard let value else {
+        return nil
+    }
+
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
 }
 
 private func outputURL(from path: String?) throws -> URL {
@@ -608,33 +896,812 @@ private func listWindows(using command: ListWindowsCommand) async throws -> Stri
     let catalog = try buildWindowCatalog(selector: command.applicationSelector, in: shareableContent)
 
     let response = WindowListResponse(
-        application: WindowListApplication(
-            name: catalog.application.applicationName,
-            bundleIdentifier: catalog.application.bundleIdentifier,
-            processID: catalog.application.processID
-        ),
-        windows: catalog.windows.map {
-            WindowListEntry(
-                index: $0.index,
-                windowID: $0.windowID,
-                title: normalizedTitle($0.title),
-                frame: JSONRect($0.frame),
-                layer: $0.layer,
-                isOnScreen: $0.isOnScreen,
-                isActive: $0.isActive
-            )
-        }
+        application: windowListApplication(for: catalog.application),
+        windows: catalog.windows.map(windowListEntry(for:))
     )
 
+    return try encodeJSON(response)
+}
+
+private func inspectAccessibility(using command: AccessibilityCommand) async throws -> String {
+    guard #available(macOS 14.0, *) else {
+        throw RegionShotError.unsupportedFeature("Element inspection currently requires macOS 14 or newer.")
+    }
+
+    try ensureAccessibilityAccess(prompt: true)
+
+    let catalog = try buildAccessibilityWindowCatalog(selector: command.applicationSelector)
+    let selectedWindow = try selectAccessibilityWindow(from: catalog, using: command.windowSelection)
+    let accessibilityWindow = selectedWindow.element
+
+    switch command.mode {
+    case .listElements:
+        let response = AccessibilityTreeResponse(
+            application: windowListApplication(for: catalog.application),
+            window: accessibilityWindowEntry(for: selectedWindow),
+            tree: accessibilityElementResponse(for: accessibilityWindow, depthRemaining: 4)
+        )
+        return try encodeJSON(response)
+    case .elementAt(let point):
+        try validate(windowPoint: point, within: selectedWindow.frame, windowTitle: displayTitle(selectedWindow.title), flag: "--element-at")
+
+        let screenPoint = CGPoint(
+            x: selectedWindow.frame.minX + CGFloat(point.x),
+            y: selectedWindow.frame.minY + CGFloat(point.y)
+        )
+
+        let hitElement = try hitTestElement(at: screenPoint)
+        try validateHitElement(
+            hitElement,
+            belongsTo: accessibilityWindow,
+            selectedWindowTitle: selectedWindow.title
+        )
+        let refinedHitElement = deepestAccessibilityElement(
+            in: accessibilityWindow,
+            containing: screenPoint,
+            depthRemaining: 8
+        ) ?? hitElement
+
+        let response = AccessibilityHitResponse(
+            application: windowListApplication(for: catalog.application),
+            window: accessibilityWindowEntry(for: selectedWindow),
+            point: JSONPoint(point.point),
+            screenPoint: JSONPoint(screenPoint),
+            hit: accessibilityElementResponse(for: refinedHitElement, depthRemaining: 1),
+            ancestors: accessibilityAncestorResponses(for: refinedHitElement, stoppingAt: accessibilityWindow)
+        )
+        return try encodeJSON(response)
+    case .pressAt(let point):
+        try validate(windowPoint: point, within: selectedWindow.frame, windowTitle: displayTitle(selectedWindow.title), flag: "--press-at")
+
+        let screenPoint = CGPoint(
+            x: selectedWindow.frame.minX + CGFloat(point.x),
+            y: selectedWindow.frame.minY + CGFloat(point.y)
+        )
+
+        let hitElement = try hitTestElement(at: screenPoint)
+        try validateHitElement(
+            hitElement,
+            belongsTo: accessibilityWindow,
+            selectedWindowTitle: selectedWindow.title
+        )
+        let refinedHitElement = deepestAccessibilityElement(
+            in: accessibilityWindow,
+            containing: screenPoint,
+            depthRemaining: 8
+        ) ?? hitElement
+        let pressableElement = try resolvePressableElement(
+            startingAt: refinedHitElement,
+            within: accessibilityWindow,
+            failureContext: "No pressable accessibility element was found at window point \(point.x),\(point.y)."
+        )
+
+        try performPress(on: pressableElement)
+
+        let response = AccessibilityPressResponse(
+            application: windowListApplication(for: catalog.application),
+            window: accessibilityWindowEntry(for: selectedWindow),
+            mode: "press-at",
+            action: kAXPressAction as String,
+            selector: nil,
+            point: JSONPoint(point.point),
+            screenPoint: JSONPoint(screenPoint),
+            matched: accessibilityElementResponse(for: refinedHitElement, depthRemaining: 1),
+            pressed: accessibilityElementResponse(for: pressableElement, depthRemaining: 1),
+            ancestors: accessibilityAncestorResponses(for: pressableElement, stoppingAt: accessibilityWindow)
+        )
+        return try encodeJSON(response)
+    case .pressElement(let selector):
+        let pressableElement = try selectAccessibilityElement(in: accessibilityWindow, using: selector)
+        try performPress(on: pressableElement.element)
+
+        let response = AccessibilityPressResponse(
+            application: windowListApplication(for: catalog.application),
+            window: accessibilityWindowEntry(for: selectedWindow),
+            mode: "press",
+            action: kAXPressAction as String,
+            selector: accessibilitySelectorResponse(for: selector),
+            point: nil,
+            screenPoint: nil,
+            matched: accessibilityElementResponse(for: pressableElement.element, depthRemaining: 1),
+            pressed: accessibilityElementResponse(for: pressableElement.element, depthRemaining: 1),
+            ancestors: accessibilityAncestorResponses(for: pressableElement.element, stoppingAt: accessibilityWindow)
+        )
+        return try encodeJSON(response)
+    }
+}
+
+private func encodeJSON<T: Encodable>(_ value: T) throws -> String {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    let data = try encoder.encode(response)
+    let data = try encoder.encode(value)
 
     guard let json = String(data: data, encoding: .utf8) else {
-        throw RegionShotError.encodeFailed("Failed to encode the window list as UTF-8 JSON.")
+        throw RegionShotError.encodeFailed("Failed to encode the response as UTF-8 JSON.")
     }
 
     return json
+}
+
+private func windowListApplication(for application: SCRunningApplication) -> WindowListApplication {
+    WindowListApplication(
+        name: application.applicationName,
+        bundleIdentifier: application.bundleIdentifier,
+        processID: application.processID
+    )
+}
+
+private func windowListApplication(for application: AutomationApplication) -> WindowListApplication {
+    WindowListApplication(
+        name: application.name,
+        bundleIdentifier: application.bundleIdentifier,
+        processID: Int32(application.processID)
+    )
+}
+
+private func windowListEntry(for window: CatalogWindow) -> WindowListEntry {
+    WindowListEntry(
+        index: window.index,
+        windowID: window.windowID,
+        title: normalizedTitle(window.title),
+        frame: JSONRect(window.frame),
+        layer: window.layer,
+        isOnScreen: window.isOnScreen,
+        isActive: window.isActive
+    )
+}
+
+private func accessibilityWindowEntry(for window: AccessibilityCatalogWindow) -> AccessibilityWindowEntry {
+    AccessibilityWindowEntry(
+        index: window.index,
+        title: normalizedTitle(window.title),
+        frame: JSONRect(window.frame),
+        isFocused: window.isFocused,
+        isMain: window.isMain
+    )
+}
+
+private func accessibilitySelectorResponse(for selector: AccessibilitySelector) -> AccessibilitySelectorResponse {
+    AccessibilitySelectorResponse(
+        role: selector.role,
+        subrole: selector.subrole,
+        title: selector.title,
+        identifier: selector.identifier,
+        description: selector.elementDescription
+    )
+}
+
+private func buildAccessibilityWindowCatalog(selector: ApplicationSelector) throws -> AccessibilityWindowCatalog {
+    let runningApplication = try resolveAutomationApplication(selector: selector)
+    let applicationElement = AXUIElementCreateApplication(runningApplication.processID)
+    let focusedWindow = copyAXElement(from: applicationElement, attribute: kAXFocusedWindowAttribute as CFString)
+    let mainWindow = copyAXElement(from: applicationElement, attribute: kAXMainWindowAttribute as CFString)
+    let rawWindows = copyAXElements(from: applicationElement, attribute: kAXWindowsAttribute as CFString)
+
+    let windows = rawWindows
+        .compactMap { element -> AccessibilityCatalogWindow? in
+            guard let frame = copyAXFrame(from: element), !frame.isEmpty else {
+                return nil
+            }
+
+            return AccessibilityCatalogWindow(
+                index: 0,
+                title: normalizedTitle(copyAXString(from: element, attribute: kAXTitleAttribute as CFString)),
+                frame: frame,
+                isFocused: focusedWindow.map { CFEqual($0, element) } ?? false,
+                isMain: mainWindow.map { CFEqual($0, element) } ?? false,
+                element: element
+            )
+        }
+        .sorted(by: accessibilityWindowSort)
+        .enumerated()
+        .map { offset, window in
+            AccessibilityCatalogWindow(
+                index: offset,
+                title: window.title,
+                frame: window.frame,
+                isFocused: window.isFocused,
+                isMain: window.isMain,
+                element: window.element
+            )
+        }
+
+    guard !windows.isEmpty else {
+        throw RegionShotError.windowNotFound("No accessibility windows are currently available for `\(runningApplication.name)`.")
+    }
+
+    return AccessibilityWindowCatalog(
+        application: runningApplication,
+        windows: windows
+    )
+}
+
+private func resolveAutomationApplication(selector: ApplicationSelector) throws -> AutomationApplication {
+    let runningApplications = NSWorkspace.shared.runningApplications
+
+    switch selector {
+    case .processID(let processID):
+        guard let application = runningApplications.first(where: { $0.processIdentifier == processID }) else {
+            throw RegionShotError.applicationNotFound("No running application matches pid \(processID).")
+        }
+        return automationApplication(from: application)
+    case .name(let query):
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedQuery.isEmpty else {
+            throw RegionShotError.invalidArguments("`--app` requires a non-empty name or process id.")
+        }
+
+        let exactMatches = runningApplications.filter { application in
+            let name = (application.localizedName ?? "").lowercased()
+            let bundleIdentifier = (application.bundleIdentifier ?? "").lowercased()
+            return name == normalizedQuery || bundleIdentifier == normalizedQuery
+        }
+
+        if exactMatches.count == 1, let match = exactMatches.first {
+            return automationApplication(from: match)
+        }
+
+        let partialMatches = runningApplications.filter { application in
+            let name = (application.localizedName ?? "").lowercased()
+            let bundleIdentifier = (application.bundleIdentifier ?? "").lowercased()
+            return name.contains(normalizedQuery) || bundleIdentifier.contains(normalizedQuery)
+        }
+
+        let matches = exactMatches.isEmpty ? partialMatches : exactMatches
+
+        guard !matches.isEmpty else {
+            throw RegionShotError.applicationNotFound("No running application matches `\(query)`.")
+        }
+
+        guard matches.count == 1, let match = matches.first else {
+            let suggestions = matches
+                .prefix(5)
+                .map { application in
+                    let summary = automationApplication(from: application)
+                    return "\(summary.name) (pid \(summary.processID), \(summary.bundleIdentifier))"
+                }
+                .joined(separator: ", ")
+            throw RegionShotError.ambiguousApplication("More than one running application matches `\(query)`: \(suggestions)")
+        }
+
+        return automationApplication(from: match)
+    }
+}
+
+private func automationApplication(from application: NSRunningApplication) -> AutomationApplication {
+    AutomationApplication(
+        name: application.localizedName ?? "<unknown>",
+        bundleIdentifier: application.bundleIdentifier ?? "",
+        processID: application.processIdentifier
+    )
+}
+
+private func accessibilityWindowSort(
+    _ left: AccessibilityCatalogWindow,
+    _ right: AccessibilityCatalogWindow
+) -> Bool {
+    if left.isFocused != right.isFocused {
+        return left.isFocused && !right.isFocused
+    }
+
+    if left.isMain != right.isMain {
+        return left.isMain && !right.isMain
+    }
+
+    let leftTitle = normalizedTitle(left.title) ?? ""
+    let rightTitle = normalizedTitle(right.title) ?? ""
+    if leftTitle != rightTitle {
+        return leftTitle.localizedCaseInsensitiveCompare(rightTitle) == .orderedAscending
+    }
+
+    if left.frame.minY != right.frame.minY {
+        return left.frame.minY < right.frame.minY
+    }
+
+    if left.frame.minX != right.frame.minX {
+        return left.frame.minX < right.frame.minX
+    }
+
+    if left.frame.width != right.frame.width {
+        return left.frame.width < right.frame.width
+    }
+
+    return left.frame.height < right.frame.height
+}
+
+private func selectAccessibilityWindow(
+    from catalog: AccessibilityWindowCatalog,
+    using selection: WindowSelection?
+) throws -> AccessibilityCatalogWindow {
+    guard let selection else {
+        if let focused = catalog.windows.first(where: \.isFocused) {
+            return focused
+        }
+        if let main = catalog.windows.first(where: \.isMain) {
+            return main
+        }
+        guard let first = catalog.windows.first else {
+            throw RegionShotError.windowNotFound("`\(catalog.application.name)` has no accessibility windows.")
+        }
+        return first
+    }
+
+    switch selection {
+    case .frontmost:
+        if let focused = catalog.windows.first(where: \.isFocused) {
+            return focused
+        }
+        if let main = catalog.windows.first(where: \.isMain) {
+            return main
+        }
+        guard let first = catalog.windows.first else {
+            throw RegionShotError.windowNotFound("`\(catalog.application.name)` has no accessibility windows.")
+        }
+        return first
+    case .index(let index):
+        guard let window = catalog.windows.first(where: { $0.index == index }) else {
+            throw RegionShotError.windowNotFound("No accessibility window at index \(index) for `\(catalog.application.name)`.")
+        }
+        return window
+    case .name(let query):
+        let normalizedQuery = query.lowercased()
+        let exactMatches = catalog.windows.filter { ($0.title ?? "").lowercased() == normalizedQuery }
+
+        if exactMatches.count == 1, let match = exactMatches.first {
+            return match
+        }
+
+        let partialMatches = catalog.windows.filter { ($0.title ?? "").lowercased().contains(normalizedQuery) }
+        let matches = exactMatches.isEmpty ? partialMatches : exactMatches
+
+        guard !matches.isEmpty else {
+            throw RegionShotError.windowNotFound("No accessibility window named `\(query)` was found for `\(catalog.application.name)`.")
+        }
+
+        guard matches.count == 1, let match = matches.first else {
+            let suggestions = matches
+                .prefix(5)
+                .map { "[\($0.index)] \(displayTitle($0.title))" }
+                .joined(separator: ", ")
+            throw RegionShotError.ambiguousWindow("More than one accessibility window matches `\(query)`: \(suggestions)")
+        }
+
+        return match
+    }
+}
+
+private func accessibilityElementResponse(
+    for element: AXUIElement,
+    depthRemaining: Int,
+    childLimit: Int = 25
+) -> AccessibilityElementResponse {
+    let children = copyAXElements(from: element, attribute: kAXChildrenAttribute as CFString)
+    let shouldDescend = depthRemaining > 0
+    let limitedChildren = shouldDescend ? Array(children.prefix(childLimit)) : []
+    let childResponses = shouldDescend
+        ? limitedChildren.map { accessibilityElementResponse(for: $0, depthRemaining: depthRemaining - 1, childLimit: childLimit) }
+        : nil
+    let truncated = (children.count > childLimit) || (depthRemaining == 0 && !children.isEmpty)
+
+    return AccessibilityElementResponse(
+        role: copyAXString(from: element, attribute: kAXRoleAttribute as CFString),
+        subrole: copyAXString(from: element, attribute: kAXSubroleAttribute as CFString),
+        title: normalizedTitle(copyAXString(from: element, attribute: kAXTitleAttribute as CFString)),
+        description: normalizedTitle(copyAXString(from: element, attribute: kAXDescriptionAttribute as CFString)),
+        identifier: normalizedTitle(copyAXString(from: element, attribute: kAXIdentifierAttribute as CFString)),
+        frame: copyAXFrame(from: element).map(JSONRect.init),
+        actions: copyAXActions(from: element),
+        childCount: children.count,
+        truncated: truncated ? true : nil,
+        children: childResponses
+    )
+}
+
+private func accessibilityAncestorResponses(
+    for element: AXUIElement,
+    stoppingAt targetWindow: AXUIElement
+) -> [AccessibilityElementResponse] {
+    var responses: [AccessibilityElementResponse] = []
+    var current = copyAXElement(from: element, attribute: kAXParentAttribute as CFString)
+    var iterationCount = 0
+
+    while let currentElement = current, iterationCount < 64 {
+        responses.append(accessibilityElementResponse(for: currentElement, depthRemaining: 0))
+        if CFEqual(currentElement, targetWindow) {
+            break
+        }
+
+        current = copyAXElement(from: currentElement, attribute: kAXParentAttribute as CFString)
+        iterationCount += 1
+    }
+
+    return responses
+}
+
+private func hitTestElement(at screenPoint: CGPoint) throws -> AXUIElement {
+    var element: AXUIElement?
+    let error = AXUIElementCopyElementAtPosition(
+        AXUIElementCreateSystemWide(),
+        Float(screenPoint.x),
+        Float(screenPoint.y),
+        &element
+    )
+
+    guard error == .success, let element else {
+        throw RegionShotError.accessibilityQueryFailed("No accessibility element was found at screen point \(Int(screenPoint.x)),\(Int(screenPoint.y)).")
+    }
+
+    return element
+}
+
+private func validateHitElement(
+    _ element: AXUIElement,
+    belongsTo selectedWindow: AXUIElement,
+    selectedWindowTitle: String?
+) throws {
+    guard let containingWindow = containingAccessibilityWindow(for: element) else {
+        throw RegionShotError.accessibilityQueryFailed("The hit-tested element does not expose a containing accessibility window.")
+    }
+
+    guard CFEqual(containingWindow, selectedWindow) else {
+        let actualWindow = accessibilityElementResponse(for: containingWindow, depthRemaining: 0)
+        let actualTitle = displayTitle(actualWindow.title)
+        throw RegionShotError.accessibilityQueryFailed("The requested point resolved to a different visible window (`\(actualTitle)`) instead of the selected window `\(displayTitle(selectedWindowTitle))`. Another window or overlay may be in front.")
+    }
+}
+
+private func containingAccessibilityWindow(for element: AXUIElement) -> AXUIElement? {
+    var current: AXUIElement? = element
+    var iterationCount = 0
+
+    while let currentElement = current, iterationCount < 64 {
+        if copyAXString(from: currentElement, attribute: kAXRoleAttribute as CFString) == (kAXWindowRole as String) {
+            return currentElement
+        }
+
+        current = copyAXElement(from: currentElement, attribute: kAXParentAttribute as CFString)
+        iterationCount += 1
+    }
+
+    return nil
+}
+
+private func deepestAccessibilityElement(
+    in root: AXUIElement,
+    containing screenPoint: CGPoint,
+    depthRemaining: Int,
+    childLimit: Int = 64
+) -> AXUIElement? {
+    guard let rootFrame = copyAXFrame(from: root), rootFrame.contains(screenPoint) else {
+        return nil
+    }
+
+    guard depthRemaining > 0 else {
+        return root
+    }
+
+    let matchingChildren = copyAXElements(from: root, attribute: kAXChildrenAttribute as CFString)
+        .prefix(childLimit)
+        .compactMap { child -> (element: AXUIElement, area: CGFloat)? in
+            guard let frame = copyAXFrame(from: child), frame.contains(screenPoint) else {
+                return nil
+            }
+            return (child, frame.width * frame.height)
+        }
+        .sorted { $0.area < $1.area }
+
+    for child in matchingChildren {
+        if let descendant = deepestAccessibilityElement(
+            in: child.element,
+            containing: screenPoint,
+            depthRemaining: depthRemaining - 1,
+            childLimit: childLimit
+        ) {
+            return descendant
+        }
+    }
+
+    return root
+}
+
+private func resolvePressableElement(
+    startingAt element: AXUIElement,
+    within targetWindow: AXUIElement,
+    failureContext: String
+) throws -> AXUIElement {
+    var current: AXUIElement? = element
+    var iterationCount = 0
+
+    while let currentElement = current, iterationCount < 64 {
+        if supportsAXAction(currentElement, action: kAXPressAction as String) {
+            return currentElement
+        }
+
+        if CFEqual(currentElement, targetWindow) {
+            break
+        }
+
+        current = copyAXElement(from: currentElement, attribute: kAXParentAttribute as CFString)
+        iterationCount += 1
+    }
+
+    throw RegionShotError.accessibilityQueryFailed(failureContext)
+}
+
+private func selectAccessibilityElement(
+    in root: AXUIElement,
+    using selector: AccessibilitySelector
+) throws -> AccessibilityElementCandidate {
+    var candidates = collectAccessibilityElementCandidates(in: root, depthRemaining: 10, childLimit: 80)
+        .filter { $0.actions.contains(kAXPressAction as String) }
+
+    candidates = filterCandidates(candidates, exactMatchFor: selector.role) { candidate in
+        candidate.role
+    }
+    candidates = filterCandidates(candidates, exactMatchFor: selector.subrole) { candidate in
+        candidate.subrole
+    }
+    candidates = refineCandidates(
+        candidates,
+        preferredText: selector.title
+    ) { candidate in
+        candidate.title
+    }
+    candidates = refineCandidates(
+        candidates,
+        preferredText: selector.identifier
+    ) { candidate in
+        candidate.identifier
+    }
+    candidates = refineCandidates(
+        candidates,
+        preferredText: selector.elementDescription
+    ) { candidate in
+        candidate.description
+    }
+
+    guard !candidates.isEmpty else {
+        throw RegionShotError.accessibilityQueryFailed("No pressable accessibility element matched \(describe(selector: selector)).")
+    }
+
+    if candidates.count == 1, let candidate = candidates.first {
+        return candidate
+    }
+
+    let suggestions = candidates
+        .prefix(5)
+        .map(formatAccessibilityCandidate)
+        .joined(separator: ", ")
+
+    throw RegionShotError.accessibilityQueryFailed("More than one pressable accessibility element matched \(describe(selector: selector)): \(suggestions)")
+}
+
+private func collectAccessibilityElementCandidates(
+    in root: AXUIElement,
+    depthRemaining: Int,
+    childLimit: Int,
+    currentDepth: Int = 0
+) -> [AccessibilityElementCandidate] {
+    let candidate = AccessibilityElementCandidate(
+        element: root,
+        depth: currentDepth,
+        role: copyAXString(from: root, attribute: kAXRoleAttribute as CFString),
+        subrole: copyAXString(from: root, attribute: kAXSubroleAttribute as CFString),
+        title: normalizedTitle(copyAXString(from: root, attribute: kAXTitleAttribute as CFString)),
+        description: normalizedTitle(copyAXString(from: root, attribute: kAXDescriptionAttribute as CFString)),
+        identifier: normalizedTitle(copyAXString(from: root, attribute: kAXIdentifierAttribute as CFString)),
+        frame: copyAXFrame(from: root),
+        actions: copyAXActions(from: root)
+    )
+
+    guard depthRemaining > 0 else {
+        return [candidate]
+    }
+
+    let childCandidates = copyAXElements(from: root, attribute: kAXChildrenAttribute as CFString)
+        .prefix(childLimit)
+        .flatMap { child in
+            collectAccessibilityElementCandidates(
+                in: child,
+                depthRemaining: depthRemaining - 1,
+                childLimit: childLimit,
+                currentDepth: currentDepth + 1
+            )
+        }
+
+    return [candidate] + childCandidates
+}
+
+private func filterCandidates(
+    _ candidates: [AccessibilityElementCandidate],
+    exactMatchFor query: String?,
+    extractor: (AccessibilityElementCandidate) -> String?
+) -> [AccessibilityElementCandidate] {
+    guard let query = normalizedSelectorText(query) else {
+        return candidates
+    }
+
+    return candidates.filter { candidate in
+        normalizedSelectorText(extractor(candidate)) == query
+    }
+}
+
+private func refineCandidates(
+    _ candidates: [AccessibilityElementCandidate],
+    preferredText query: String?,
+    extractor: (AccessibilityElementCandidate) -> String?
+) -> [AccessibilityElementCandidate] {
+    guard let query = normalizedSelectorText(query) else {
+        return candidates
+    }
+
+    let exactMatches = candidates.filter { candidate in
+        normalizedSelectorText(extractor(candidate)) == query
+    }
+    if !exactMatches.isEmpty {
+        return exactMatches
+    }
+
+    return candidates.filter { candidate in
+        guard let value = normalizedSelectorText(extractor(candidate)) else {
+            return false
+        }
+        return value.contains(query)
+    }
+}
+
+private func performPress(on element: AXUIElement) throws {
+    let error = AXUIElementPerformAction(element, kAXPressAction as CFString)
+    guard error == .success else {
+        let target = formatAccessibilityCandidate(
+            AccessibilityElementCandidate(
+                element: element,
+                depth: 0,
+                role: copyAXString(from: element, attribute: kAXRoleAttribute as CFString),
+                subrole: copyAXString(from: element, attribute: kAXSubroleAttribute as CFString),
+                title: normalizedTitle(copyAXString(from: element, attribute: kAXTitleAttribute as CFString)),
+                description: normalizedTitle(copyAXString(from: element, attribute: kAXDescriptionAttribute as CFString)),
+                identifier: normalizedTitle(copyAXString(from: element, attribute: kAXIdentifierAttribute as CFString)),
+                frame: copyAXFrame(from: element),
+                actions: copyAXActions(from: element)
+            )
+        )
+        throw RegionShotError.accessibilityQueryFailed("Failed to perform `AXPress` on \(target) (AX error \(error.rawValue)).")
+    }
+}
+
+private func supportsAXAction(_ element: AXUIElement, action: String) -> Bool {
+    let normalizedAction = normalizedSelectorText(action)
+    return copyAXActions(from: element).contains { candidate in
+        normalizedSelectorText(candidate) == normalizedAction
+    }
+}
+
+private func normalizedSelectorText(_ value: String?) -> String? {
+    guard let value else {
+        return nil
+    }
+
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+        return nil
+    }
+
+    return trimmed.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+}
+
+private func describe(selector: AccessibilitySelector) -> String {
+    let parts = [
+        selector.role.map { "role `\($0)`" },
+        selector.subrole.map { "subrole `\($0)`" },
+        selector.title.map { "title `\($0)`" },
+        selector.identifier.map { "identifier `\($0)`" },
+        selector.elementDescription.map { "description `\($0)`" },
+    ].compactMap { $0 }
+
+    return parts.joined(separator: ", ")
+}
+
+private func formatAccessibilityCandidate(_ candidate: AccessibilityElementCandidate) -> String {
+    let role = candidate.role ?? "?"
+    let subrole = candidate.subrole.map { "/\($0)" } ?? ""
+    let title = candidate.title.map { " title=\($0)" } ?? ""
+    let identifier = candidate.identifier.map { " id=\($0)" } ?? ""
+    let frame = candidate.frame.map { " @ \(formatFrame($0))" } ?? ""
+    return "\(role)\(subrole)\(title)\(identifier)\(frame)"
+}
+
+private func copyAXString(from element: AXUIElement, attribute: CFString) -> String? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else {
+        return nil
+    }
+    return value as? String
+}
+
+private func copyAXElement(from element: AXUIElement, attribute: CFString) -> AXUIElement? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success, let value else {
+        return nil
+    }
+    guard CFGetTypeID(value) == AXUIElementGetTypeID() else {
+        return nil
+    }
+    let axElement = value as! AXUIElement
+    return axElement
+}
+
+private func copyAXElements(from element: AXUIElement, attribute: CFString) -> [AXUIElement] {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else {
+        return []
+    }
+    return value as? [AXUIElement] ?? []
+}
+
+private func copyAXActions(from element: AXUIElement) -> [String] {
+    var names: CFArray?
+    guard AXUIElementCopyActionNames(element, &names) == .success else {
+        return []
+    }
+    return names as? [String] ?? []
+}
+
+private func copyAXFrame(from element: AXUIElement) -> CGRect? {
+    guard
+        let position = copyAXPoint(from: element, attribute: kAXPositionAttribute as CFString),
+        let size = copyAXSize(from: element, attribute: kAXSizeAttribute as CFString)
+    else {
+        return nil
+    }
+
+    return CGRect(origin: position, size: size)
+}
+
+private func copyAXPoint(from element: AXUIElement, attribute: CFString) -> CGPoint? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success, let value else {
+        return nil
+    }
+    guard CFGetTypeID(value) == AXValueGetTypeID() else {
+        return nil
+    }
+
+    let axValue = value as! AXValue
+    guard AXValueGetType(axValue) == .cgPoint else {
+        return nil
+    }
+
+    var point = CGPoint.zero
+    guard AXValueGetValue(axValue, .cgPoint, &point) else {
+        return nil
+    }
+    return point
+}
+
+private func copyAXSize(from element: AXUIElement, attribute: CFString) -> CGSize? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success, let value else {
+        return nil
+    }
+    guard CFGetTypeID(value) == AXValueGetTypeID() else {
+        return nil
+    }
+
+    let axValue = value as! AXValue
+    guard AXValueGetType(axValue) == .cgSize else {
+        return nil
+    }
+
+    var size = CGSize.zero
+    guard AXValueGetValue(axValue, .cgSize, &size) else {
+        return nil
+    }
+    return size
+}
+
+private func formatFrame(_ frame: CGRect) -> String {
+    "\(Int(frame.minX.rounded(.down))),\(Int(frame.minY.rounded(.down))) \(Int(frame.width.rounded(.down)))x\(Int(frame.height.rounded(.down)))"
 }
 
 @available(macOS 14.0, *)
@@ -979,6 +2046,20 @@ private func ensureScreenCaptureAccess() throws {
     throw RegionShotError.capturePermissionDenied
 }
 
+private func ensureAccessibilityAccess(prompt: Bool) throws {
+    let isTrusted: Bool
+    if prompt {
+        let promptKey = "AXTrustedCheckOptionPrompt"
+        isTrusted = AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
+    } else {
+        isTrusted = AXIsProcessTrusted()
+    }
+
+    guard isTrusted else {
+        throw RegionShotError.accessibilityPermissionDenied
+    }
+}
+
 private func validate(windowCrop: WindowCropRect, within contentRect: CGRect, windowTitle: String) throws {
     let cropRect = windowCrop.rect
     let windowRect = CGRect(origin: .zero, size: contentRect.size)
@@ -987,6 +2068,14 @@ private func validate(windowCrop: WindowCropRect, within contentRect: CGRect, wi
         let windowWidth = Int(windowRect.width.rounded(.down))
         let windowHeight = Int(windowRect.height.rounded(.down))
         throw RegionShotError.invalidArguments("`--window-crop` \(windowCrop.x),\(windowCrop.y),\(windowCrop.width),\(windowCrop.height) falls outside the selected window \(windowTitle) sized \(windowWidth)x\(windowHeight) points.")
+    }
+}
+
+private func validate(windowPoint: WindowPoint, within windowFrame: CGRect, windowTitle: String, flag: String) throws {
+    guard CGFloat(windowPoint.x) < windowFrame.width, CGFloat(windowPoint.y) < windowFrame.height else {
+        let windowWidth = Int(windowFrame.width.rounded(.down))
+        let windowHeight = Int(windowFrame.height.rounded(.down))
+        throw RegionShotError.invalidArguments("`\(flag)` \(windowPoint.x),\(windowPoint.y) falls outside the selected window \(windowTitle) sized \(windowWidth)x\(windowHeight) points.")
     }
 }
 

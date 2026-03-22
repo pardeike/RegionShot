@@ -16,6 +16,11 @@ regionshot --app "System Settings" --frontmost-window
 regionshot --app "System Settings" --frontmost-window --window-crop 40,80,300,160
 regionshot --app "System Settings" --window-index 0
 regionshot --app "System Settings" --window-name "<window title>"
+regionshot --app "System Settings" --list-elements
+regionshot --app "System Settings" --press --role AXButton --title Done
+regionshot --app "System Settings" --press-at 14,14
+regionshot --app "System Settings" --element-at 14,14
+regionshot --app "System Settings" --window-name "<window title>" --press --role AXButton --title Done
 regionshot 120 240 800 600 --app "System Settings"
 regionshot 120 240 800 600 --app 12345
 regionshot 120 240 800 600 --output ~/Desktop/region.png
@@ -47,6 +52,22 @@ In specific-window mode, `regionshot` can capture:
 
 `--window-crop x,y,width,height` works with those specific-window modes and is relative to the selected window's top-left corner in points. This is useful for element-level screenshots inside a known window.
 
+`--list-elements` prints a bounded JSON accessibility tree for the selected window. If you omit a window selector, it defaults to the app's focused window, then main window, then first accessibility window.
+
+`--press` is the preferred interaction mode. It finds a pressable accessibility element inside the selected window using selector fields such as `--role`, `--subrole`, `--title`, `--identifier`, and `--description`, then performs `AXPress`. `--press-element` remains as an alias.
+
+For `--title`, `--identifier`, and `--description`, the matcher prefers exact case-insensitive matches and only falls back to case-insensitive substring matching when no exact match exists.
+
+If a selector is ambiguous, the command fails and prints a short candidate list instead of pressing an arbitrary element.
+
+`--press-at x,y` is the fallback mode when the accessibility tree is too weak or a selector is inconvenient. It resolves the deepest visible element at a window-relative point, walks up to the nearest ancestor that supports `AXPress`, and presses that element.
+
+`--element-at x,y` hit-tests the visible accessibility element at a window-relative point and prints JSON for the hit element plus its ancestor chain. This uses the visible screen stack, so another window or overlay in front can change the result.
+
+App-filtered screenshot capture and `--list-windows` use the ScreenCaptureKit window catalog, so they require macOS Screen Recording permission for the host process.
+
+Accessibility inspection and actions use Accessibility APIs directly and require macOS Accessibility permission for the host process.
+
 ## Install
 
 ```bash
@@ -58,6 +79,14 @@ That script:
 - builds the package in release mode
 - installs the executable to `~/Scripts/regionshot`
 - signs it with the first locally available `Apple Development` identity
+
+For a repo-local prototype binary that does not touch `~/Scripts/regionshot`, use:
+
+```bash
+./Scripts/build-private.sh
+```
+
+That writes a separately named binary to `.build/private-bin/regionshot-private`.
 
 You can override the signing identity or install directory:
 
