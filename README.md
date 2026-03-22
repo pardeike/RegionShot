@@ -13,6 +13,7 @@ regionshot --x 120 --y 240 --width 800 --height 600
 regionshot --app "System Settings"
 regionshot --app "System Settings" --list-windows
 regionshot --app "System Settings" --frontmost-window
+regionshot --app "System Settings" --frontmost-window --window-crop 40,80,300,160
 regionshot --app "System Settings" --window-index 0
 regionshot --app "System Settings" --window-name "<window title>"
 regionshot 120 240 800 600 --app "System Settings"
@@ -43,6 +44,8 @@ In specific-window mode, `regionshot` can capture:
 - the app's frontmost window via `--frontmost-window`
 - the app window at a frontmost-first index via `--window-index`
 - the app window whose title matches via `--window-name`
+
+`--window-crop x,y,width,height` works with those specific-window modes and is relative to the selected window's top-left corner in points. This is useful for element-level screenshots inside a known window.
 
 ## Install
 

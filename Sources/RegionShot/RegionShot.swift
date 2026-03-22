@@ -43,6 +43,7 @@ private struct CaptureCommand: Sendable {
     let outputURL: URL
     let applicationSelector: ApplicationSelector?
     let windowSelection: WindowSelection?
+    let windowCrop: WindowCropRect?
 }
 
 private struct ListWindowsCommand: Sendable {
@@ -58,6 +59,17 @@ private struct CaptureRegion: Sendable {
     var rectangleArgument: String {
         "\(x),\(y),\(width),\(height)"
     }
+
+    var rect: CGRect {
+        CGRect(x: x, y: y, width: width, height: height)
+    }
+}
+
+private struct WindowCropRect: Sendable {
+    let x: Int
+    let y: Int
+    let width: Int
+    let height: Int
 
     var rect: CGRect {
         CGRect(x: x, y: y, width: width, height: height)
@@ -220,15 +232,16 @@ Usage:
   regionshot <x> <y> <width> <height> [--app <name-or-pid>] [--output /path/to/file.png]
   regionshot --x <x> --y <y> --width <width> --height <height> [--app <name-or-pid>] [--output /path/to/file.png]
   regionshot --app <name-or-pid> [--list-windows]
-  regionshot --app <name-or-pid> --frontmost-window [--output /path/to/file.png]
-  regionshot --app <name-or-pid> --window-index <n> [--output /path/to/file.png]
-  regionshot --app <name-or-pid> --window-name <title> [--output /path/to/file.png]
+  regionshot --app <name-or-pid> --frontmost-window [--window-crop x,y,width,height] [--output /path/to/file.png]
+  regionshot --app <name-or-pid> --window-index <n> [--window-crop x,y,width,height] [--output /path/to/file.png]
+  regionshot --app <name-or-pid> --window-name <title> [--window-crop x,y,width,height] [--output /path/to/file.png]
   regionshot --help
 
 Modes:
   rectangle capture: screen rect, optionally filtered to one app
   app inspection: `--app ... --list-windows` returns JSON with indices, titles, and bounds
   specific window capture: frontmost window, indexed window, or named window for one app
+  in-window crop: `--window-crop x,y,width,height` is relative to the selected window's top-left in points
 
 LLM-friendly behavior:
   `regionshot --app "System Settings"` defaults to the same JSON window listing as `--list-windows`.
@@ -248,11 +261,16 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
 
     let applicationSelector = parsed.values["--app"].map(ApplicationSelector.init(rawValue:))
     let windowSelection = try parseWindowSelection(parsed)
+    let windowCrop = try parseWindowCrop(parsed.values["--window-crop"])
     let wantsWindowList = parsed.flags.contains("--list-windows")
     let outputPath = parsed.values["--output"]
 
     if windowSelection != nil, applicationSelector == nil {
         throw RegionShotError.invalidArguments("Window selection requires `--app <name-or-pid>`.")
+    }
+
+    if windowCrop != nil, applicationSelector == nil {
+        throw RegionShotError.invalidArguments("`--window-crop` requires `--app <name-or-pid>` and a specific window selection.")
     }
 
     if wantsWindowList, applicationSelector == nil {
@@ -261,6 +279,10 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
 
     if wantsWindowList, windowSelection != nil {
         throw RegionShotError.invalidArguments("`--list-windows` cannot be combined with `--frontmost-window`, `--window-index`, or `--window-name`.")
+    }
+
+    if wantsWindowList, windowCrop != nil {
+        throw RegionShotError.invalidArguments("`--list-windows` cannot be combined with `--window-crop`.")
     }
 
     if wantsWindowList, parsed.region != nil {
@@ -273,6 +295,14 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
 
     if parsed.region != nil, windowSelection != nil {
         throw RegionShotError.invalidArguments("Rectangle capture cannot be combined with specific window selection. Choose one capture mode.")
+    }
+
+    if parsed.region != nil, windowCrop != nil {
+        throw RegionShotError.invalidArguments("Rectangle capture cannot be combined with `--window-crop`. `--window-crop` is relative to a selected app window.")
+    }
+
+    if windowCrop != nil, windowSelection == nil {
+        throw RegionShotError.invalidArguments("`--window-crop` requires one of `--frontmost-window`, `--window-index`, or `--window-name`.")
     }
 
     if applicationSelector != nil, parsed.region == nil, windowSelection == nil, outputPath != nil {
@@ -297,7 +327,8 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
             region: parsed.region,
             outputURL: outputURL,
             applicationSelector: applicationSelector,
-            windowSelection: windowSelection
+            windowSelection: windowSelection,
+            windowCrop: windowCrop
         )
     )
 }
@@ -353,7 +384,7 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         case "--help", "-h", "--list-windows", "--frontmost-window":
             flags.insert(argument)
             index += 1
-        case "--x", "--y", "--width", "--height", "--output", "--app", "--window-index", "--window-name":
+        case "--x", "--y", "--width", "--height", "--output", "--app", "--window-index", "--window-name", "--window-crop":
             let valueIndex = index + 1
             guard valueIndex < arguments.count else {
                 throw RegionShotError.invalidArguments("Missing value for \(argument).")
@@ -422,6 +453,37 @@ private func parseWindowSelection(_ parsed: ParsedArguments) throws -> WindowSel
     return selections.first
 }
 
+private func parseWindowCrop(_ rawValue: String?) throws -> WindowCropRect? {
+    guard let rawValue else {
+        return nil
+    }
+
+    let components = rawValue
+        .split(separator: ",", omittingEmptySubsequences: false)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    guard components.count == 4 else {
+        throw RegionShotError.invalidArguments("`--window-crop` must use `x,y,width,height`.")
+    }
+
+    let crop = try WindowCropRect(
+        x: parseInteger(components[0], flag: "--window-crop"),
+        y: parseInteger(components[1], flag: "--window-crop"),
+        width: parseInteger(components[2], flag: "--window-crop"),
+        height: parseInteger(components[3], flag: "--window-crop")
+    )
+
+    guard crop.x >= 0, crop.y >= 0 else {
+        throw RegionShotError.invalidArguments("`--window-crop` requires non-negative x and y coordinates.")
+    }
+
+    guard crop.width > 0, crop.height > 0 else {
+        throw RegionShotError.invalidArguments("`--window-crop` width and height must be greater than zero.")
+    }
+
+    return crop
+}
+
 private func outputURL(from path: String?) throws -> URL {
     guard let path, !path.isEmpty else {
         return temporaryOutputURL()
@@ -478,7 +540,7 @@ private func capture(using command: CaptureCommand) async throws {
 
         if let windowSelection = command.windowSelection {
             let window = try selectWindow(from: catalog, using: windowSelection)
-            try await captureWindow(window, outputURL: command.outputURL)
+            try await captureWindow(window, crop: command.windowCrop, outputURL: command.outputURL)
             return
         }
 
@@ -762,7 +824,7 @@ private func selectWindow(from catalog: AppWindowCatalog, using selection: Windo
 }
 
 @available(macOS 14.0, *)
-private func captureWindow(_ window: CatalogWindow, outputURL: URL) async throws {
+private func captureWindow(_ window: CatalogWindow, crop: WindowCropRect?, outputURL: URL) async throws {
     let filter = SCContentFilter(desktopIndependentWindow: window.scWindow)
     let info = SCShareableContent.info(for: filter)
     let clearBackgroundColor = CGColor(red: 0, green: 0, blue: 0, alpha: 0)
@@ -776,8 +838,17 @@ private func captureWindow(_ window: CatalogWindow, outputURL: URL) async throws
     configuration.ignoreShadowsSingleWindow = true
     configuration.ignoreGlobalClipSingleWindow = true
 
-    let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
-    try writePNG(image: image, to: outputURL)
+    let capturedImage = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+
+    let finalImage: CGImage
+    if let crop {
+        try validate(windowCrop: crop, within: info.contentRect, windowTitle: displayTitle(window.title))
+        finalImage = try cropWindowImage(capturedImage, using: crop, pointPixelScale: CGFloat(info.pointPixelScale))
+    } else {
+        finalImage = capturedImage
+    }
+
+    try writePNG(image: finalImage, to: outputURL)
 }
 
 @available(macOS 14.0, *)
@@ -904,6 +975,64 @@ private func ensureScreenCaptureAccess() throws {
     }
 
     throw RegionShotError.capturePermissionDenied
+}
+
+private func validate(windowCrop: WindowCropRect, within contentRect: CGRect, windowTitle: String) throws {
+    let cropRect = windowCrop.rect
+    let windowRect = CGRect(origin: .zero, size: contentRect.size)
+
+    guard cropRect.maxX <= windowRect.maxX, cropRect.maxY <= windowRect.maxY else {
+        let windowWidth = Int(windowRect.width.rounded(.down))
+        let windowHeight = Int(windowRect.height.rounded(.down))
+        throw RegionShotError.invalidArguments("`--window-crop` \(windowCrop.x),\(windowCrop.y),\(windowCrop.width),\(windowCrop.height) falls outside the selected window \(windowTitle) sized \(windowWidth)x\(windowHeight) points.")
+    }
+}
+
+private func cropWindowImage(_ image: CGImage, using crop: WindowCropRect, pointPixelScale: CGFloat) throws -> CGImage {
+    let scale = max(1, pointPixelScale)
+    let minX = max(0, Int(floor(CGFloat(crop.x) * scale)))
+    let minY = max(0, Int(floor(CGFloat(crop.y) * scale)))
+    let maxX = min(image.width, Int(ceil(CGFloat(crop.x + crop.width) * scale)))
+    let maxY = min(image.height, Int(ceil(CGFloat(crop.y + crop.height) * scale)))
+    let croppedWidth = maxX - minX
+    let croppedHeight = maxY - minY
+
+    guard croppedWidth > 0, croppedHeight > 0 else {
+        throw RegionShotError.captureFailed("`--window-crop` resolved to an empty image.")
+    }
+
+    guard
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+        let context = CGContext(
+            data: nil,
+            width: croppedWidth,
+            height: croppedHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+    else {
+        throw RegionShotError.captureFailed("Failed to allocate a bitmap context for the cropped window capture.")
+    }
+
+    context.translateBy(x: 0, y: CGFloat(croppedHeight))
+    context.scaleBy(x: 1, y: -1)
+    context.draw(
+        image,
+        in: CGRect(
+            x: -CGFloat(minX),
+            y: -CGFloat(minY),
+            width: CGFloat(image.width),
+            height: CGFloat(image.height)
+        )
+    )
+
+    guard let croppedImage = context.makeImage() else {
+        throw RegionShotError.captureFailed("Failed to render the cropped window capture.")
+    }
+
+    return croppedImage
 }
 
 private func writePNG(image: CGImage, to outputURL: URL) throws {
