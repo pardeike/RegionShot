@@ -14,13 +14,16 @@ struct RegionShot {
             switch behavior {
             case .showHelp:
                 print(usageText)
-            case .capture(let options):
-                try await capture(using: options)
-                print(options.outputURL.path)
+            case .capture(let command):
+                try await capture(using: command)
+                print(command.outputURL.path)
+            case .listWindows(let command):
+                let json = try await listWindows(using: command)
+                print(json)
             }
         } catch let error as RegionShotError {
             writeStandardError("error: \(error.localizedDescription)\n")
-            writeStandardError("Run `RegionShot --help` for usage.\n")
+            writeStandardError("Run `regionshot --help` for usage.\n")
             Darwin.exit(error.exitCode)
         } catch {
             writeStandardError("error: \(error.localizedDescription)\n")
@@ -31,13 +34,19 @@ struct RegionShot {
 
 private enum CommandBehavior: Sendable {
     case showHelp
-    case capture(CommandLineOptions)
+    case capture(CaptureCommand)
+    case listWindows(ListWindowsCommand)
 }
 
-private struct CommandLineOptions: Sendable {
-    let region: CaptureRegion
+private struct CaptureCommand: Sendable {
+    let region: CaptureRegion?
     let outputURL: URL
     let applicationSelector: ApplicationSelector?
+    let windowSelection: WindowSelection?
+}
+
+private struct ListWindowsCommand: Sendable {
+    let applicationSelector: ApplicationSelector
 }
 
 private struct CaptureRegion: Sendable {
@@ -77,10 +86,81 @@ private enum ApplicationSelector: Sendable {
     }
 }
 
+private enum WindowSelection: Sendable {
+    case frontmost
+    case index(Int)
+    case name(String)
+}
+
+private struct ParsedArguments {
+    let region: CaptureRegion?
+    let values: [String: String]
+    let flags: Set<String>
+}
+
 private struct DisplayCapturePlan {
     let display: SCDisplay
     let intersectionRect: CGRect
     let pointPixelScale: CGFloat
+}
+
+private struct AppWindowCatalog {
+    let application: SCRunningApplication
+    let windows: [CatalogWindow]
+}
+
+private struct CatalogWindow {
+    let index: Int
+    let windowID: CGWindowID
+    let title: String?
+    let frame: CGRect
+    let layer: Int
+    let isOnScreen: Bool
+    let isActive: Bool
+    let scWindow: SCWindow
+}
+
+private struct WindowSnapshot {
+    let windowID: CGWindowID
+    let ownerPID: pid_t
+    let title: String?
+    let bounds: CGRect
+    let layer: Int
+}
+
+private struct WindowListResponse: Encodable {
+    let application: WindowListApplication
+    let windows: [WindowListEntry]
+}
+
+private struct WindowListApplication: Encodable {
+    let name: String
+    let bundleIdentifier: String
+    let processID: Int32
+}
+
+private struct WindowListEntry: Encodable {
+    let index: Int
+    let windowID: UInt32
+    let title: String?
+    let frame: JSONRect
+    let layer: Int
+    let isOnScreen: Bool
+    let isActive: Bool
+}
+
+private struct JSONRect: Encodable {
+    let x: Double
+    let y: Double
+    let width: Double
+    let height: Double
+
+    init(_ rect: CGRect) {
+        x = rect.origin.x
+        y = rect.origin.y
+        width = rect.size.width
+        height = rect.size.height
+    }
 }
 
 private enum RegionShotError: LocalizedError {
@@ -91,6 +171,8 @@ private enum RegionShotError: LocalizedError {
     case capturePermissionDenied
     case applicationNotFound(String)
     case ambiguousApplication(String)
+    case windowNotFound(String)
+    case ambiguousWindow(String)
     case captureFailed(String)
     case encodeFailed(String)
 
@@ -110,6 +192,10 @@ private enum RegionShotError: LocalizedError {
             return message
         case .ambiguousApplication(let message):
             return message
+        case .windowNotFound(let message):
+            return message
+        case .ambiguousWindow(let message):
+            return message
         case .captureFailed(let message):
             return message
         case .encodeFailed(let message):
@@ -121,23 +207,32 @@ private enum RegionShotError: LocalizedError {
         switch self {
         case .invalidArguments, .invalidInteger, .invalidRegion:
             return 64
-        case .unsupportedFeature, .capturePermissionDenied, .applicationNotFound, .ambiguousApplication, .captureFailed, .encodeFailed:
+        case .unsupportedFeature, .capturePermissionDenied, .applicationNotFound, .ambiguousApplication, .windowNotFound, .ambiguousWindow, .captureFailed, .encodeFailed:
             return 1
         }
     }
 }
 
 private let usageText = """
-RegionShot captures a rectangular PNG from the screen.
+regionshot captures either a screen rectangle or app windows on macOS.
 
 Usage:
-  RegionShot <x> <y> <width> <height> [--app <name-or-pid>] [--output /path/to/file.png]
-  RegionShot --x <x> --y <y> --width <width> --height <height> [--app <name-or-pid>] [--output /path/to/file.png]
-  RegionShot --help
+  regionshot <x> <y> <width> <height> [--app <name-or-pid>] [--output /path/to/file.png]
+  regionshot --x <x> --y <y> --width <width> --height <height> [--app <name-or-pid>] [--output /path/to/file.png]
+  regionshot --app <name-or-pid> [--list-windows]
+  regionshot --app <name-or-pid> --frontmost-window [--output /path/to/file.png]
+  regionshot --app <name-or-pid> --window-index <n> [--output /path/to/file.png]
+  regionshot --app <name-or-pid> --window-name <title> [--output /path/to/file.png]
+  regionshot --help
 
-Without `--app`, the tool uses macOS `screencapture -R`.
-With `--app`, it captures only that app's windows within the rectangle, even if other apps are in front.
-When `--output` is omitted, the tool writes a temporary PNG and prints the path.
+Modes:
+  rectangle capture: screen rect, optionally filtered to one app
+  app inspection: `--app ... --list-windows` returns JSON with indices, titles, and bounds
+  specific window capture: frontmost window, indexed window, or named window for one app
+
+LLM-friendly behavior:
+  `regionshot --app "System Settings"` defaults to the same JSON window listing as `--list-windows`.
+  Window indices are frontmost-first within the target app.
 """
 
 private func parse(arguments: [String]) throws -> CommandBehavior {
@@ -145,48 +240,80 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
         return .showHelp
     }
 
-    if arguments.contains("--help") || arguments.contains("-h") {
+    let parsed = try parseRawArguments(arguments)
+
+    if parsed.flags.contains("--help") || parsed.flags.contains("-h") {
         return .showHelp
     }
 
-    if let region = try parsePositionalRegion(arguments: arguments) {
-        let values = try parseOptionalFlags(arguments: Array(arguments.dropFirst(4)))
-        return .capture(
-            CommandLineOptions(
-                region: region,
-                outputURL: try outputURL(from: values.outputPath),
-                applicationSelector: values.applicationSelector
+    let applicationSelector = parsed.values["--app"].map(ApplicationSelector.init(rawValue:))
+    let windowSelection = try parseWindowSelection(parsed)
+    let wantsWindowList = parsed.flags.contains("--list-windows")
+    let outputPath = parsed.values["--output"]
+
+    if windowSelection != nil, applicationSelector == nil {
+        throw RegionShotError.invalidArguments("Window selection requires `--app <name-or-pid>`.")
+    }
+
+    if wantsWindowList, applicationSelector == nil {
+        throw RegionShotError.invalidArguments("`--list-windows` requires `--app <name-or-pid>`.")
+    }
+
+    if wantsWindowList, windowSelection != nil {
+        throw RegionShotError.invalidArguments("`--list-windows` cannot be combined with `--frontmost-window`, `--window-index`, or `--window-name`.")
+    }
+
+    if wantsWindowList, parsed.region != nil {
+        throw RegionShotError.invalidArguments("`--list-windows` cannot be combined with rectangle coordinates.")
+    }
+
+    if wantsWindowList, outputPath != nil {
+        throw RegionShotError.invalidArguments("`--list-windows` prints JSON to stdout and does not use `--output`.")
+    }
+
+    if parsed.region != nil, windowSelection != nil {
+        throw RegionShotError.invalidArguments("Rectangle capture cannot be combined with specific window selection. Choose one capture mode.")
+    }
+
+    if wantsWindowList || (applicationSelector != nil && parsed.region == nil && windowSelection == nil) {
+        return .listWindows(
+            ListWindowsCommand(
+                applicationSelector: applicationSelector!
             )
         )
     }
 
-    let values = try parseOptionalFlags(arguments: arguments, requireRectangleFlags: true)
-
-    guard
-        let x = values["--x"],
-        let y = values["--y"],
-        let width = values["--width"],
-        let height = values["--height"]
-    else {
-        throw RegionShotError.invalidArguments("Expected --x, --y, --width, and --height.")
+    if parsed.region == nil, applicationSelector == nil {
+        throw RegionShotError.invalidArguments("Missing rectangle arguments.")
     }
 
-    let region = try CaptureRegion(
-        x: parseInteger(x, flag: "--x"),
-        y: parseInteger(y, flag: "--y"),
-        width: parseInteger(width, flag: "--width"),
-        height: parseInteger(height, flag: "--height")
-    )
-
-    try validate(region: region)
-
+    let outputURL = try outputURL(from: outputPath)
     return .capture(
-        CommandLineOptions(
-            region: region,
-            outputURL: try outputURL(from: values.outputPath),
-            applicationSelector: values.applicationSelector
+        CaptureCommand(
+            region: parsed.region,
+            outputURL: outputURL,
+            applicationSelector: applicationSelector,
+            windowSelection: windowSelection
         )
     )
+}
+
+private func parseRawArguments(_ arguments: [String]) throws -> ParsedArguments {
+    var region: CaptureRegion?
+    var trailingArguments = arguments
+
+    if let positionalRegion = try parsePositionalRegion(arguments: arguments) {
+        region = positionalRegion
+        trailingArguments = Array(arguments.dropFirst(4))
+    }
+
+    let parsedOptions = try parseOptions(arguments: trailingArguments)
+    if region != nil {
+        return ParsedArguments(region: region, values: parsedOptions.values, flags: parsedOptions.flags)
+    }
+
+    let flaggedRegion = try parseFlaggedRegion(values: parsedOptions.values)
+    return ParsedArguments(region: flaggedRegion, values: parsedOptions.values, flags: parsedOptions.flags)
 }
 
 private func parsePositionalRegion(arguments: [String]) throws -> CaptureRegion? {
@@ -210,17 +337,19 @@ private func parsePositionalRegion(arguments: [String]) throws -> CaptureRegion?
     return region
 }
 
-private func parseOptionalFlags(arguments: [String], requireRectangleFlags: Bool = false) throws -> [String: String] {
+private func parseOptions(arguments: [String]) throws -> (values: [String: String], flags: Set<String>) {
     var values: [String: String] = [:]
+    var flags: Set<String> = []
     var index = 0
 
     while index < arguments.count {
         let argument = arguments[index]
 
         switch argument {
-        case "--help", "-h":
-            return [:]
-        case "--x", "--y", "--width", "--height", "--output", "--app":
+        case "--help", "-h", "--list-windows", "--frontmost-window":
+            flags.insert(argument)
+            index += 1
+        case "--x", "--y", "--width", "--height", "--output", "--app", "--window-index", "--window-name":
             let valueIndex = index + 1
             guard valueIndex < arguments.count else {
                 throw RegionShotError.invalidArguments("Missing value for \(argument).")
@@ -233,11 +362,60 @@ private func parseOptionalFlags(arguments: [String], requireRectangleFlags: Bool
         }
     }
 
-    if requireRectangleFlags, values.isEmpty {
-        throw RegionShotError.invalidArguments("Missing rectangle arguments.")
+    return (values, flags)
+}
+
+private func parseFlaggedRegion(values: [String: String]) throws -> CaptureRegion? {
+    let rectangleKeys = ["--x", "--y", "--width", "--height"]
+    let presentKeys = rectangleKeys.filter { values[$0] != nil }
+
+    if presentKeys.isEmpty {
+        return nil
     }
 
-    return values
+    guard presentKeys.count == rectangleKeys.count else {
+        throw RegionShotError.invalidArguments("Expected all of `--x`, `--y`, `--width`, and `--height` when using flagged rectangle coordinates.")
+    }
+
+    let region = try CaptureRegion(
+        x: parseInteger(values["--x"]!, flag: "--x"),
+        y: parseInteger(values["--y"]!, flag: "--y"),
+        width: parseInteger(values["--width"]!, flag: "--width"),
+        height: parseInteger(values["--height"]!, flag: "--height")
+    )
+
+    try validate(region: region)
+    return region
+}
+
+private func parseWindowSelection(_ parsed: ParsedArguments) throws -> WindowSelection? {
+    var selections: [WindowSelection] = []
+
+    if parsed.flags.contains("--frontmost-window") {
+        selections.append(.frontmost)
+    }
+
+    if let rawIndex = parsed.values["--window-index"] {
+        let index = try parseInteger(rawIndex, flag: "--window-index")
+        guard index >= 0 else {
+            throw RegionShotError.invalidArguments("`--window-index` must be zero or greater.")
+        }
+        selections.append(.index(index))
+    }
+
+    if let windowName = parsed.values["--window-name"] {
+        let trimmed = windowName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw RegionShotError.invalidArguments("`--window-name` requires a non-empty title.")
+        }
+        selections.append(.name(trimmed))
+    }
+
+    guard selections.count <= 1 else {
+        throw RegionShotError.invalidArguments("Choose only one of `--frontmost-window`, `--window-index`, or `--window-name`.")
+    }
+
+    return selections.first
 }
 
 private func outputURL(from path: String?) throws -> URL {
@@ -256,20 +434,6 @@ private func outputURL(from path: String?) throws -> URL {
     }
 
     return fileURL.standardizedFileURL
-}
-
-private extension Dictionary where Key == String, Value == String {
-    var outputPath: String? {
-        self["--output"]
-    }
-
-    var applicationSelector: ApplicationSelector? {
-        guard let rawValue = self["--app"], !rawValue.isEmpty else {
-            return nil
-        }
-
-        return ApplicationSelector(rawValue: rawValue)
-    }
 }
 
 private func temporaryOutputURL() -> URL {
@@ -296,24 +460,43 @@ private func validate(region: CaptureRegion) throws {
     }
 }
 
-private func capture(using options: CommandLineOptions) async throws {
-    let directoryURL = options.outputURL.deletingLastPathComponent()
+private func capture(using command: CaptureCommand) async throws {
+    let directoryURL = command.outputURL.deletingLastPathComponent()
     try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
 
-    if let applicationSelector = options.applicationSelector {
+    if let applicationSelector = command.applicationSelector {
         guard #available(macOS 14.0, *) else {
-            throw RegionShotError.unsupportedFeature("`--app` requires macOS 14 or newer.")
+            throw RegionShotError.unsupportedFeature("App-filtered capture requires macOS 14 or newer.")
+        }
+
+        let shareableContent = try await loadShareableContent()
+        let catalog = try buildWindowCatalog(selector: applicationSelector, in: shareableContent)
+
+        if let windowSelection = command.windowSelection {
+            let window = try selectWindow(from: catalog, using: windowSelection)
+            try await captureWindow(window, outputURL: command.outputURL)
+            return
+        }
+
+        guard let region = command.region else {
+            throw RegionShotError.invalidArguments("App-filtered rectangle capture requires rectangle coordinates.")
         }
 
         try await captureApplicationRegion(
-            selector: applicationSelector,
-            region: options.region,
-            outputURL: options.outputURL
+            application: catalog.application,
+            windows: catalog.windows.map(\.scWindow),
+            displays: shareableContent.displays,
+            region: region,
+            outputURL: command.outputURL
         )
         return
     }
 
-    try captureScreenRegion(region: options.region, outputURL: options.outputURL)
+    guard let region = command.region else {
+        throw RegionShotError.invalidArguments("Rectangle capture requires coordinates when no app is specified.")
+    }
+
+    try captureScreenRegion(region: region, outputURL: command.outputURL)
 }
 
 private func captureScreenRegion(region: CaptureRegion, outputURL: URL) throws {
@@ -348,100 +531,149 @@ private func captureScreenRegion(region: CaptureRegion, outputURL: URL) throws {
     }
 }
 
-@available(macOS 14.0, *)
-private func captureApplicationRegion(
-    selector: ApplicationSelector,
-    region: CaptureRegion,
-    outputURL: URL
-) async throws {
-    try ensureScreenCaptureAccess()
-
-    let shareableContent = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
-    let application = try resolveApplication(selector: selector, in: shareableContent.applications)
-    let visibleWindows = shareableContent.windows.filter {
-        $0.owningApplication?.processID == application.processID && ($0.isOnScreen || $0.isActive)
+private func listWindows(using command: ListWindowsCommand) async throws -> String {
+    guard #available(macOS 14.0, *) else {
+        throw RegionShotError.unsupportedFeature("Window inspection requires macOS 14 or newer.")
     }
 
-    guard !visibleWindows.isEmpty else {
-        throw RegionShotError.captureFailed("No shareable windows are currently visible for `\(application.applicationName)`.")
-    }
+    let shareableContent = try await loadShareableContent()
+    let catalog = try buildWindowCatalog(selector: command.applicationSelector, in: shareableContent)
 
-    let regionRect = region.rect
-    let plans = planDisplayCaptures(
-        displays: shareableContent.displays,
-        visibleWindows: visibleWindows,
-        regionRect: regionRect
+    let response = WindowListResponse(
+        application: WindowListApplication(
+            name: catalog.application.applicationName,
+            bundleIdentifier: catalog.application.bundleIdentifier,
+            processID: catalog.application.processID
+        ),
+        windows: catalog.windows.map {
+            WindowListEntry(
+                index: $0.index,
+                windowID: $0.windowID,
+                title: normalizedTitle($0.title),
+                frame: JSONRect($0.frame),
+                layer: $0.layer,
+                isOnScreen: $0.isOnScreen,
+                isActive: $0.isActive
+            )
+        }
     )
 
-    guard !plans.isEmpty else {
-        throw RegionShotError.captureFailed("No visible content from `\(application.applicationName)` intersects the requested rectangle.")
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(response)
+
+    guard let json = String(data: data, encoding: .utf8) else {
+        throw RegionShotError.encodeFailed("Failed to encode the window list as UTF-8 JSON.")
     }
 
-    let canvasScale = max(1, plans.map(\.pointPixelScale).max() ?? 1)
-    let canvasSize = CGSize(
-        width: max(1, ceil(regionRect.width * canvasScale)),
-        height: max(1, ceil(regionRect.height * canvasScale))
-    )
-
-    guard
-        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-        let context = CGContext(
-            data: nil,
-            width: Int(canvasSize.width),
-            height: Int(canvasSize.height),
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        )
-    else {
-        throw RegionShotError.captureFailed("Failed to allocate an image buffer for the app-filtered capture.")
-    }
-
-    context.translateBy(x: 0, y: canvasSize.height)
-    context.scaleBy(x: 1, y: -1)
-
-    for plan in plans {
-        let filter = SCContentFilter(display: plan.display, including: [application], exceptingWindows: [])
-        let configuration = SCStreamConfiguration()
-        configuration.width = Int(ceil(plan.intersectionRect.width * plan.pointPixelScale))
-        configuration.height = Int(ceil(plan.intersectionRect.height * plan.pointPixelScale))
-        configuration.sourceRect = CGRect(
-            x: plan.intersectionRect.minX - plan.display.frame.minX,
-            y: plan.intersectionRect.minY - plan.display.frame.minY,
-            width: plan.intersectionRect.width,
-            height: plan.intersectionRect.height
-        )
-        let clearBackgroundColor = CGColor(red: 0, green: 0, blue: 0, alpha: 0)
-
-        configuration.scalesToFit = true
-        configuration.showsCursor = false
-        configuration.backgroundColor = clearBackgroundColor
-        configuration.ignoreShadowsDisplay = true
-
-        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
-        let destinationRect = CGRect(
-            x: (plan.intersectionRect.minX - regionRect.minX) * canvasScale,
-            y: (plan.intersectionRect.minY - regionRect.minY) * canvasScale,
-            width: plan.intersectionRect.width * canvasScale,
-            height: plan.intersectionRect.height * canvasScale
-        )
-
-        context.draw(image, in: destinationRect)
-    }
-
-    guard let image = context.makeImage() else {
-        throw RegionShotError.captureFailed("ScreenCaptureKit returned no image data for the filtered capture.")
-    }
-
-    try writePNG(image: image, to: outputURL)
+    return json
 }
 
 @available(macOS 14.0, *)
-private func resolveApplication(
-    selector: ApplicationSelector,
-    in applications: [SCRunningApplication]
-) throws -> SCRunningApplication {
+private func loadShareableContent() async throws -> SCShareableContent {
+    try ensureScreenCaptureAccess()
+    return try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
+}
+
+@available(macOS 14.0, *)
+private func buildWindowCatalog(selector: ApplicationSelector, in shareableContent: SCShareableContent) throws -> AppWindowCatalog {
+    let application = try resolveApplication(selector: selector, in: shareableContent.applications)
+    let eligibleWindows = shareableContent.windows.filter {
+        $0.owningApplication?.processID == application.processID &&
+        !$0.frame.isEmpty &&
+        ($0.isOnScreen || $0.isActive)
+    }
+
+    guard !eligibleWindows.isEmpty else {
+        throw RegionShotError.windowNotFound("No capturable windows are currently available for `\(application.applicationName)`.")
+    }
+
+    let windowsByID = Dictionary(uniqueKeysWithValues: eligibleWindows.map { ($0.windowID, $0) })
+    let orderedSnapshots = currentWindowSnapshots().filter { $0.ownerPID == application.processID }
+
+    var orderedWindows: [CatalogWindow] = []
+    var seenWindowIDs: Set<CGWindowID> = []
+
+    for snapshot in orderedSnapshots {
+        guard let scWindow = windowsByID[snapshot.windowID] else {
+            continue
+        }
+
+        let catalogWindow = CatalogWindow(
+            index: orderedWindows.count,
+            windowID: scWindow.windowID,
+            title: normalizedTitle(scWindow.title) ?? normalizedTitle(snapshot.title),
+            frame: scWindow.frame,
+            layer: scWindow.windowLayer,
+            isOnScreen: scWindow.isOnScreen,
+            isActive: scWindow.isActive,
+            scWindow: scWindow
+        )
+
+        orderedWindows.append(catalogWindow)
+        seenWindowIDs.insert(scWindow.windowID)
+    }
+
+    let fallbackWindows = eligibleWindows
+        .filter { !seenWindowIDs.contains($0.windowID) }
+        .sorted {
+            let leftTitle = normalizedTitle($0.title) ?? ""
+            let rightTitle = normalizedTitle($1.title) ?? ""
+
+            if leftTitle != rightTitle {
+                return leftTitle.localizedCaseInsensitiveCompare(rightTitle) == .orderedAscending
+            }
+
+            return $0.windowID < $1.windowID
+        }
+
+    for scWindow in fallbackWindows {
+        orderedWindows.append(
+            CatalogWindow(
+                index: orderedWindows.count,
+                windowID: scWindow.windowID,
+                title: normalizedTitle(scWindow.title),
+                frame: scWindow.frame,
+                layer: scWindow.windowLayer,
+                isOnScreen: scWindow.isOnScreen,
+                isActive: scWindow.isActive,
+                scWindow: scWindow
+            )
+        )
+    }
+
+    return AppWindowCatalog(application: application, windows: orderedWindows)
+}
+
+private func currentWindowSnapshots() -> [WindowSnapshot] {
+    let rawWindowInfo = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+
+    return rawWindowInfo.compactMap { entry -> WindowSnapshot? in
+        guard
+            let windowNumber = entry[kCGWindowNumber as String] as? NSNumber,
+            let ownerPID = entry[kCGWindowOwnerPID as String] as? NSNumber,
+            let boundsDictionary = entry[kCGWindowBounds as String] as? NSDictionary,
+            let layer = entry[kCGWindowLayer as String] as? NSNumber
+        else {
+            return nil
+        }
+
+        guard let bounds = CGRect(dictionaryRepresentation: boundsDictionary), !bounds.isEmpty else {
+            return nil
+        }
+
+        return WindowSnapshot(
+            windowID: CGWindowID(truncating: windowNumber),
+            ownerPID: pid_t(truncating: ownerPID),
+            title: normalizedTitle(entry[kCGWindowName as String] as? String),
+            bounds: bounds,
+            layer: layer.intValue
+        )
+    }
+}
+
+@available(macOS 14.0, *)
+private func resolveApplication(selector: ApplicationSelector, in applications: [SCRunningApplication]) throws -> SCRunningApplication {
     switch selector {
     case .processID(let processID):
         guard let application = applications.first(where: { $0.processID == processID }) else {
@@ -486,9 +718,147 @@ private func resolveApplication(
 }
 
 @available(macOS 14.0, *)
+private func selectWindow(from catalog: AppWindowCatalog, using selection: WindowSelection) throws -> CatalogWindow {
+    switch selection {
+    case .frontmost:
+        guard let window = catalog.windows.first else {
+            throw RegionShotError.windowNotFound("`\(catalog.application.applicationName)` has no capturable windows.")
+        }
+        return window
+    case .index(let index):
+        guard let window = catalog.windows.first(where: { $0.index == index }) else {
+            throw RegionShotError.windowNotFound("No window at index \(index) for `\(catalog.application.applicationName)`. Run `regionshot --app \"\(catalog.application.applicationName)\" --list-windows` to inspect available windows.")
+        }
+        return window
+    case .name(let query):
+        let normalizedQuery = query.lowercased()
+        let exactMatches = catalog.windows.filter { ($0.title ?? "").lowercased() == normalizedQuery }
+
+        if exactMatches.count == 1, let match = exactMatches.first {
+            return match
+        }
+
+        let partialMatches = catalog.windows.filter { ($0.title ?? "").lowercased().contains(normalizedQuery) }
+        let matches = exactMatches.isEmpty ? partialMatches : exactMatches
+
+        guard !matches.isEmpty else {
+            throw RegionShotError.windowNotFound("No window named `\(query)` was found for `\(catalog.application.applicationName)`. Run `regionshot --app \"\(catalog.application.applicationName)\" --list-windows` to inspect available windows.")
+        }
+
+        guard matches.count == 1, let match = matches.first else {
+            let suggestions = matches
+                .prefix(5)
+                .map { "[\($0.index)] \(displayTitle($0.title))" }
+                .joined(separator: ", ")
+            throw RegionShotError.ambiguousWindow("More than one window matches `\(query)`: \(suggestions)")
+        }
+
+        return match
+    }
+}
+
+@available(macOS 14.0, *)
+private func captureWindow(_ window: CatalogWindow, outputURL: URL) async throws {
+    let filter = SCContentFilter(desktopIndependentWindow: window.scWindow)
+    let info = SCShareableContent.info(for: filter)
+    let clearBackgroundColor = CGColor(red: 0, green: 0, blue: 0, alpha: 0)
+    let configuration = SCStreamConfiguration()
+
+    configuration.width = max(1, Int(ceil(info.contentRect.width * CGFloat(info.pointPixelScale))))
+    configuration.height = max(1, Int(ceil(info.contentRect.height * CGFloat(info.pointPixelScale))))
+    configuration.showsCursor = false
+    configuration.scalesToFit = false
+    configuration.backgroundColor = clearBackgroundColor
+    configuration.ignoreShadowsSingleWindow = true
+    configuration.ignoreGlobalClipSingleWindow = true
+
+    let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+    try writePNG(image: image, to: outputURL)
+}
+
+@available(macOS 14.0, *)
+private func captureApplicationRegion(
+    application: SCRunningApplication,
+    windows: [SCWindow],
+    displays: [SCDisplay],
+    region: CaptureRegion,
+    outputURL: URL
+) async throws {
+    let regionRect = region.rect
+    let plans = planDisplayCaptures(
+        displays: displays,
+        windows: windows,
+        regionRect: regionRect
+    )
+
+    guard !plans.isEmpty else {
+        throw RegionShotError.captureFailed("No visible content from `\(application.applicationName)` intersects the requested rectangle.")
+    }
+
+    let canvasScale = max(1, plans.map(\.pointPixelScale).max() ?? 1)
+    let canvasSize = CGSize(
+        width: max(1, ceil(regionRect.width * canvasScale)),
+        height: max(1, ceil(regionRect.height * canvasScale))
+    )
+
+    guard
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+        let context = CGContext(
+            data: nil,
+            width: Int(canvasSize.width),
+            height: Int(canvasSize.height),
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+    else {
+        throw RegionShotError.captureFailed("Failed to allocate an image buffer for the app-filtered capture.")
+    }
+
+    context.translateBy(x: 0, y: canvasSize.height)
+    context.scaleBy(x: 1, y: -1)
+
+    for plan in plans {
+        let filter = SCContentFilter(display: plan.display, including: [application], exceptingWindows: [])
+        let clearBackgroundColor = CGColor(red: 0, green: 0, blue: 0, alpha: 0)
+        let configuration = SCStreamConfiguration()
+
+        configuration.width = max(1, Int(ceil(plan.intersectionRect.width * plan.pointPixelScale)))
+        configuration.height = max(1, Int(ceil(plan.intersectionRect.height * plan.pointPixelScale)))
+        configuration.sourceRect = CGRect(
+            x: plan.intersectionRect.minX - plan.display.frame.minX,
+            y: plan.intersectionRect.minY - plan.display.frame.minY,
+            width: plan.intersectionRect.width,
+            height: plan.intersectionRect.height
+        )
+        configuration.scalesToFit = true
+        configuration.showsCursor = false
+        configuration.backgroundColor = clearBackgroundColor
+        configuration.ignoreShadowsDisplay = true
+
+        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+        let destinationRect = CGRect(
+            x: (plan.intersectionRect.minX - regionRect.minX) * canvasScale,
+            y: (plan.intersectionRect.minY - regionRect.minY) * canvasScale,
+            width: plan.intersectionRect.width * canvasScale,
+            height: plan.intersectionRect.height * canvasScale
+        )
+
+        context.draw(image, in: destinationRect)
+    }
+
+    guard let image = context.makeImage() else {
+        throw RegionShotError.captureFailed("ScreenCaptureKit returned no image data for the filtered capture.")
+    }
+
+    try writePNG(image: image, to: outputURL)
+}
+
+@available(macOS 14.0, *)
 private func planDisplayCaptures(
     displays: [SCDisplay],
-    visibleWindows: [SCWindow],
+    windows: [SCWindow],
     regionRect: CGRect
 ) -> [DisplayCapturePlan] {
     displays.compactMap { display in
@@ -497,7 +867,7 @@ private func planDisplayCaptures(
             return nil
         }
 
-        let hasWindowContent = visibleWindows.contains { window in
+        let hasWindowContent = windows.contains { window in
             !window.frame.intersection(intersectionRect).isNull
         }
 
@@ -542,6 +912,19 @@ private func writePNG(image: CGImage, to outputURL: URL) throws {
     guard CGImageDestinationFinalize(destination) else {
         throw RegionShotError.encodeFailed("Failed to write PNG data to \(outputURL.path).")
     }
+}
+
+private func normalizedTitle(_ title: String?) -> String? {
+    guard let title else {
+        return nil
+    }
+
+    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+}
+
+private func displayTitle(_ title: String?) -> String {
+    normalizedTitle(title) ?? "<untitled>"
 }
 
 private func writeStandardError(_ message: String) {

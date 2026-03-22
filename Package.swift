@@ -10,7 +10,7 @@ let package = Package(
     ],
     products: [
         .executable(
-            name: "RegionShot",
+            name: "regionshot",
             targets: ["RegionShot"]
         ),
     ],

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-product_name="RegionShot"
+product_name="regionshot"
 install_dir="${INSTALL_DIR:-$HOME/Scripts}"
 build_dir="$project_dir/.build/install"
 target_path="$install_dir/$product_name"
@@ -29,7 +29,11 @@ swift build \
   --product "$product_name" \
   --build-path "$build_dir"
 
-install -m 755 "$build_dir/release/$product_name" "$target_path"
+/usr/bin/install -m 755 "$build_dir/release/$product_name" "$target_path"
+if [[ ! -f "$target_path" ]]; then
+  echo "Failed to install $product_name to $target_path" >&2
+  exit 1
+fi
 codesign --force --sign "$identity" "$target_path"
 codesign --verify --verbose "$target_path"
 

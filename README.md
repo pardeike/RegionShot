@@ -1,18 +1,23 @@
 # RegionShot
 
-`RegionShot` is a small macOS Swift 6 command-line tool that captures only a rectangular region of the screen and writes a PNG file.
+`RegionShot` is a small macOS Swift 6 command-line tool that installs a lowercase `regionshot` binary for capturing only the relevant portion of the screen.
 
 By default it creates a temporary file and prints the final path, which makes it easy to chain into other tooling without wasting screenshot context on the rest of the display.
 
 ## Usage
 
 ```bash
-RegionShot
-RegionShot 120 240 800 600
-RegionShot --x 120 --y 240 --width 800 --height 600
-RegionShot 120 240 800 600 --app "System Settings"
-RegionShot 120 240 800 600 --app 12345
-RegionShot 120 240 800 600 --output ~/Desktop/region.png
+regionshot
+regionshot 120 240 800 600
+regionshot --x 120 --y 240 --width 800 --height 600
+regionshot --app "System Settings"
+regionshot --app "System Settings" --list-windows
+regionshot --app "System Settings" --frontmost-window
+regionshot --app "System Settings" --window-index 0
+regionshot --app "System Settings" --window-name "<window title>"
+regionshot 120 240 800 600 --app "System Settings"
+regionshot 120 240 800 600 --app 12345
+regionshot 120 240 800 600 --output ~/Desktop/region.png
 ```
 
 Running the binary without parameters prints a concise self-description and usage summary.
@@ -25,7 +30,17 @@ With `--app`, the value may be either:
 - a bundle identifier such as `com.apple.systempreferences`
 - a process id such as `12345`
 
-In `--app` mode the output contains only that application's windows inside the requested rectangle, even if other apps are visually in front.
+If `--app` is provided without rectangle coordinates or a specific window flag, `regionshot` prints a JSON window list to stdout for inspection.
+
+Window indices are frontmost-first within the selected app.
+
+In `--app` rectangle mode the output contains only that application's windows inside the requested rectangle, even if other apps are visually in front.
+
+In specific-window mode, `regionshot` can capture:
+
+- the app's frontmost window via `--frontmost-window`
+- the app window at a frontmost-first index via `--window-index`
+- the app window whose title matches via `--window-name`
 
 ## Install
 
@@ -36,7 +51,7 @@ In `--app` mode the output contains only that application's windows inside the r
 That script:
 
 - builds the package in release mode
-- installs the executable to `~/Scripts/RegionShot`
+- installs the executable to `~/Scripts/regionshot`
 - signs it with the first locally available `Apple Development` identity
 
 You can override the signing identity or install directory:
