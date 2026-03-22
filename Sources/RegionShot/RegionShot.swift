@@ -1001,35 +1001,9 @@ private func cropWindowImage(_ image: CGImage, using crop: WindowCropRect, point
         throw RegionShotError.captureFailed("`--window-crop` resolved to an empty image.")
     }
 
-    guard
-        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-        let context = CGContext(
-            data: nil,
-            width: croppedWidth,
-            height: croppedHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        )
-    else {
-        throw RegionShotError.captureFailed("Failed to allocate a bitmap context for the cropped window capture.")
-    }
-
-    context.translateBy(x: 0, y: CGFloat(croppedHeight))
-    context.scaleBy(x: 1, y: -1)
-    context.draw(
-        image,
-        in: CGRect(
-            x: -CGFloat(minX),
-            y: -CGFloat(minY),
-            width: CGFloat(image.width),
-            height: CGFloat(image.height)
-        )
-    )
-
-    guard let croppedImage = context.makeImage() else {
-        throw RegionShotError.captureFailed("Failed to render the cropped window capture.")
+    let cropRect = CGRect(x: minX, y: minY, width: croppedWidth, height: croppedHeight)
+    guard let croppedImage = image.cropping(to: cropRect) else {
+        throw RegionShotError.captureFailed("Failed to crop the selected window image.")
     }
 
     return croppedImage
