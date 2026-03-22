@@ -226,7 +226,8 @@ private enum RegionShotError: LocalizedError {
 }
 
 private let usageText = """
-regionshot captures either a screen rectangle or app windows on macOS.
+regionshot wraps native macOS `screencapture` and `ScreenCaptureKit`.
+It captures either a screen rectangle or app windows on macOS.
 
 Usage:
   regionshot <x> <y> <width> <height> [--app <name-or-pid>] [--output /path/to/file.png]

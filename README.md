@@ -1,6 +1,6 @@
 # RegionShot
 
-`RegionShot` is a small macOS Swift 6 command-line tool that installs a lowercase `regionshot` binary for capturing only the relevant portion of the screen.
+`RegionShot` is a small macOS Swift 6 command-line tool that installs a lowercase `regionshot` binary. It wraps native macOS `screencapture` and `ScreenCaptureKit` so capture results come from the system screenshot stack.
 
 By default it creates a temporary file and prints the final path, which makes it easy to chain into other tooling without wasting screenshot context on the rest of the display.
 
