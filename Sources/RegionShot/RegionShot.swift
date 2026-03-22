@@ -275,6 +275,10 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
         throw RegionShotError.invalidArguments("Rectangle capture cannot be combined with specific window selection. Choose one capture mode.")
     }
 
+    if applicationSelector != nil, parsed.region == nil, windowSelection == nil, outputPath != nil {
+        throw RegionShotError.invalidArguments("`--output` requires a capture mode. Use rectangle coordinates or one of `--frontmost-window`, `--window-index`, or `--window-name`. `--app` alone lists windows as JSON.")
+    }
+
     if wantsWindowList || (applicationSelector != nil && parsed.region == nil && windowSelection == nil) {
         return .listWindows(
             ListWindowsCommand(

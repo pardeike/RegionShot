@@ -32,6 +32,8 @@ With `--app`, the value may be either:
 
 If `--app` is provided without rectangle coordinates or a specific window flag, `regionshot` prints a JSON window list to stdout for inspection.
 
+`--output` only applies to capture modes. If you pass `--app` without rectangle coordinates or a window selector, no file is written.
+
 Window indices are frontmost-first within the selected app.
 
 In `--app` rectangle mode the output contains only that application's windows inside the requested rectangle, even if other apps are visually in front.
