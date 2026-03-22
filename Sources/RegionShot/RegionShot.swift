@@ -10,6 +10,8 @@ import UniformTypeIdentifiers
 @main
 struct RegionShot {
     static func main() async {
+        synchronizeCodexIntegrationIfAvailable()
+
         do {
             let behavior = try parse(arguments: Array(CommandLine.arguments.dropFirst()))
 
@@ -422,6 +424,295 @@ Rules:
   rectangle mode without `--app` forwards to `screencapture -R`
   rectangle mode with `--app` includes only that app, even if covered by other windows
 """
+
+private let codexSkillName = "regionshot"
+private let codexManagedAgentsStartMarker = "<!-- regionshot-managed:start -->"
+private let codexManagedAgentsEndMarker = "<!-- regionshot-managed:end -->"
+
+private func synchronizeCodexIntegrationIfAvailable() {
+    do {
+        try installOrUpdateCodexIntegrationIfAvailable()
+    } catch {
+        if ProcessInfo.processInfo.environment["REGIONSHOT_DEBUG_CODEX_SYNC"] == "1" {
+            writeStandardError("warning: failed to sync Codex support files: \(error.localizedDescription)\n")
+        }
+    }
+}
+
+private func installOrUpdateCodexIntegrationIfAvailable() throws {
+    guard let codexSourceDirectory = findCodexSupportDirectory() else {
+        return
+    }
+
+    let skillSourceDirectory = codexSourceDirectory
+        .appendingPathComponent("skills", isDirectory: true)
+        .appendingPathComponent(codexSkillName, isDirectory: true)
+    let pointerSourceURL = codexSourceDirectory.appendingPathComponent("AGENTS.pointer.md")
+
+    let fileManager = FileManager.default
+    guard
+        fileManager.fileExists(atPath: skillSourceDirectory.appendingPathComponent("SKILL.md").path),
+        fileManager.fileExists(atPath: pointerSourceURL.path)
+    else {
+        return
+    }
+
+    let codexHomeDirectory = fileManager.homeDirectoryForCurrentUser
+        .appendingPathComponent(".codex", isDirectory: true)
+    let skillDestinationDirectory = codexHomeDirectory
+        .appendingPathComponent("skills", isDirectory: true)
+        .appendingPathComponent(codexSkillName, isDirectory: true)
+    let agentsDestinationURL = codexHomeDirectory.appendingPathComponent("AGENTS.md")
+
+    try syncDirectoryIfNeeded(from: skillSourceDirectory, to: skillDestinationDirectory)
+
+    let pointerBody = try String(contentsOf: pointerSourceURL, encoding: .utf8)
+    try upsertManagedAgentsPointer(pointerBody, at: agentsDestinationURL)
+}
+
+private func findCodexSupportDirectory() -> URL? {
+    let fileManager = FileManager.default
+
+    for candidate in codexSupportCandidates() {
+        let standardizedCandidate = candidate.standardizedFileURL
+        guard fileManager.fileExists(atPath: standardizedCandidate.path) else {
+            continue
+        }
+
+        let skillDirectory = standardizedCandidate
+            .appendingPathComponent("skills", isDirectory: true)
+            .appendingPathComponent(codexSkillName, isDirectory: true)
+        let skillFileURL = skillDirectory.appendingPathComponent("SKILL.md")
+        let pointerFileURL = standardizedCandidate.appendingPathComponent("AGENTS.pointer.md")
+
+        if fileManager.fileExists(atPath: skillFileURL.path), fileManager.fileExists(atPath: pointerFileURL.path) {
+            return standardizedCandidate
+        }
+    }
+
+    return nil
+}
+
+private func codexSupportCandidates() -> [URL] {
+    var candidates: [URL] = []
+
+    if let executableDirectory = currentExecutableURL()?.deletingLastPathComponent() {
+        candidates.append(
+            executableDirectory
+                .appendingPathComponent(".regionshot-support", isDirectory: true)
+                .appendingPathComponent("Codex", isDirectory: true)
+        )
+        appendAncestorCodexDirectories(startingAt: executableDirectory, to: &candidates)
+    }
+
+    let currentDirectory = URL(
+        fileURLWithPath: FileManager.default.currentDirectoryPath,
+        isDirectory: true
+    )
+    appendAncestorCodexDirectories(startingAt: currentDirectory, to: &candidates)
+
+    var deduplicated: [URL] = []
+    var seenPaths: Set<String> = []
+    for candidate in candidates {
+        let path = candidate.standardizedFileURL.path
+        if seenPaths.insert(path).inserted {
+            deduplicated.append(candidate.standardizedFileURL)
+        }
+    }
+
+    return deduplicated
+}
+
+private func appendAncestorCodexDirectories(startingAt directory: URL, to candidates: inout [URL]) {
+    var currentPath = directory.standardizedFileURL.path
+
+    while true {
+        let currentDirectoryURL = URL(fileURLWithPath: currentPath, isDirectory: true)
+        candidates.append(currentDirectoryURL.appendingPathComponent("Codex", isDirectory: true))
+
+        let parentPath = (currentPath as NSString).deletingLastPathComponent
+        if parentPath.isEmpty || parentPath == currentPath {
+            break
+        }
+
+        currentPath = parentPath
+    }
+}
+
+private func currentExecutableURL() -> URL? {
+    var size: UInt32 = 0
+    _ = _NSGetExecutablePath(nil, &size)
+
+    var buffer = [CChar](repeating: 0, count: Int(size))
+    guard _NSGetExecutablePath(&buffer, &size) == 0 else {
+        return nil
+    }
+
+    let executablePathBytes = buffer
+        .prefix { $0 != 0 }
+        .map { UInt8(bitPattern: $0) }
+    let executablePath = String(decoding: executablePathBytes, as: UTF8.self)
+
+    return URL(fileURLWithPath: executablePath)
+        .resolvingSymlinksInPath()
+        .standardizedFileURL
+}
+
+private func syncDirectoryIfNeeded(from sourceDirectory: URL, to destinationDirectory: URL) throws {
+    let fileManager = FileManager.default
+
+    if try directoriesMatch(sourceDirectory, destinationDirectory) {
+        return
+    }
+
+    try fileManager.createDirectory(
+        at: destinationDirectory.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+
+    if fileManager.fileExists(atPath: destinationDirectory.path) {
+        try fileManager.removeItem(at: destinationDirectory)
+    }
+
+    try fileManager.copyItem(at: sourceDirectory, to: destinationDirectory)
+}
+
+private func directoriesMatch(_ sourceDirectory: URL, _ destinationDirectory: URL) throws -> Bool {
+    let fileManager = FileManager.default
+    var isDirectory: ObjCBool = false
+
+    guard fileManager.fileExists(atPath: destinationDirectory.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+        return false
+    }
+
+    let sourceFiles = try regularFiles(in: sourceDirectory)
+    let destinationFiles = try regularFiles(in: destinationDirectory)
+    guard sourceFiles == destinationFiles else {
+        return false
+    }
+
+    for relativePath in sourceFiles {
+        let sourceFileURL = sourceDirectory.appendingPathComponent(relativePath)
+        let destinationFileURL = destinationDirectory.appendingPathComponent(relativePath)
+
+        if !fileManager.contentsEqual(atPath: sourceFileURL.path, andPath: destinationFileURL.path) {
+            return false
+        }
+    }
+
+    return true
+}
+
+private func regularFiles(in directory: URL) throws -> [String] {
+    let fileManager = FileManager.default
+    guard let enumerator = fileManager.enumerator(
+        at: directory,
+        includingPropertiesForKeys: [.isRegularFileKey],
+        options: [.skipsHiddenFiles]
+    ) else {
+        return []
+    }
+
+    let directoryPathPrefix = directory.standardizedFileURL.path + "/"
+    var files: [String] = []
+
+    for case let fileURL as URL in enumerator {
+        let resourceValues = try fileURL.resourceValues(forKeys: [.isRegularFileKey])
+        guard resourceValues.isRegularFile == true else {
+            continue
+        }
+
+        let filePath = fileURL.standardizedFileURL.path
+        if filePath.hasPrefix(directoryPathPrefix) {
+            files.append(String(filePath.dropFirst(directoryPathPrefix.count)))
+        }
+    }
+
+    return files.sorted()
+}
+
+private func upsertManagedAgentsPointer(_ pointerBody: String, at agentsURL: URL) throws {
+    let trimmedPointerBody = pointerBody.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedPointerBody.isEmpty else {
+        return
+    }
+
+    let managedBlock = """
+    \(codexManagedAgentsStartMarker)
+    \(trimmedPointerBody)
+    \(codexManagedAgentsEndMarker)
+    """
+
+    let fileManager = FileManager.default
+    let existingContents = (try? String(contentsOf: agentsURL, encoding: .utf8)) ?? ""
+    let updatedContents = updatedAgentsContents(
+        from: existingContents,
+        managedBlock: managedBlock,
+        legacyPointerBody: trimmedPointerBody
+    )
+
+    guard updatedContents != existingContents else {
+        return
+    }
+
+    try fileManager.createDirectory(
+        at: agentsURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try updatedContents.write(to: agentsURL, atomically: true, encoding: .utf8)
+}
+
+private func updatedAgentsContents(
+    from existingContents: String,
+    managedBlock: String,
+    legacyPointerBody: String
+) -> String {
+    let normalizedExistingContents = normalizeManagedText(existingContents)
+    let legacyStandaloneContents = normalizeManagedText("""
+    # User Environment Notes
+
+    \(legacyPointerBody)
+    """)
+
+    if normalizedExistingContents.isEmpty || normalizedExistingContents == legacyStandaloneContents {
+        return """
+        # User Environment Notes
+
+        \(managedBlock)
+        """
+    }
+
+    if let managedRange = managedAgentsRange(in: existingContents) {
+        var updatedContents = existingContents
+        updatedContents.replaceSubrange(managedRange, with: managedBlock)
+        return ensureTrailingNewline(in: updatedContents)
+    }
+
+    return ensureTrailingNewline(in: existingContents) + "\n\(managedBlock)\n"
+}
+
+private func managedAgentsRange(in contents: String) -> Range<String.Index>? {
+    guard let startRange = contents.range(of: codexManagedAgentsStartMarker) else {
+        return nil
+    }
+
+    guard let endRange = contents.range(of: codexManagedAgentsEndMarker, range: startRange.upperBound..<contents.endIndex) else {
+        return nil
+    }
+
+    return startRange.lowerBound..<endRange.upperBound
+}
+
+private func normalizeManagedText(_ value: String) -> String {
+    value
+        .replacingOccurrences(of: "\r\n", with: "\n")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func ensureTrailingNewline(in value: String) -> String {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? "" : trimmed + "\n"
+}
 
 private func parse(arguments: [String]) throws -> CommandBehavior {
     guard !arguments.isEmpty else {

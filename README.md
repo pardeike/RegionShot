@@ -78,6 +78,7 @@ That script:
 
 - builds the package in release mode
 - installs the executable to `~/Scripts/regionshot`
+- installs the repo's `Codex/` support files beside the binary in `~/Scripts/.regionshot-support/Codex`
 - signs it with the first locally available `Apple Development` identity
 
 For a repo-local prototype binary that does not touch `~/Scripts/regionshot`, use:
@@ -87,6 +88,8 @@ For a repo-local prototype binary that does not touch `~/Scripts/regionshot`, us
 ```
 
 That writes a separately named binary to `.build/private-bin/regionshot-private`.
+
+Both the release and private install paths copy the repo's `Codex/` support files beside the binary. On launch, `regionshot` will silently install or update `~/.codex/skills/regionshot` and a managed `regionshot` pointer block in `~/.codex/AGENTS.md` when those support files are present. If the support file structure is missing, the binary skips this step and continues normally.
 
 You can override the signing identity or install directory:
 

@@ -1,0 +1,2 @@
+- Use the `regionshot` skill and the installed `/Users/ap/Scripts/regionshot` binary for macOS desktop app window screenshots, occluded-window capture, window inspection, in-window crops, and Accessibility element inspection/actions.
+- Prefer `regionshot` over raw `screencapture` or generic desktop screenshot tooling when the task is about a specific desktop app window.

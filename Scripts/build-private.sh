@@ -7,6 +7,9 @@ private_name="${PRIVATE_BINARY_NAME:-regionshot-private}"
 install_dir="${INSTALL_DIR:-$project_dir/.build/private-bin}"
 build_dir="$project_dir/.build/private-install"
 target_path="$install_dir/$private_name"
+support_source_dir="$project_dir/Codex"
+support_root_dir="$install_dir/.regionshot-support"
+support_target_dir="$support_root_dir/Codex"
 
 identity="${CODESIGN_IDENTITY:-}"
 if [[ -z "$identity" ]]; then
@@ -18,6 +21,11 @@ if [[ -z "$identity" ]]; then
 fi
 
 mkdir -p "$install_dir"
+
+if [[ ! -d "$support_source_dir" ]]; then
+  echo "Missing Codex support files at $support_source_dir" >&2
+  exit 1
+fi
 
 swift build \
   --package-path "$project_dir" \
@@ -31,6 +39,10 @@ if [[ ! -f "$target_path" ]]; then
   exit 1
 fi
 
+rm -rf "$support_target_dir"
+mkdir -p "$support_root_dir"
+ditto "$support_source_dir" "$support_target_dir"
+
 if [[ -n "$identity" ]]; then
   codesign --force --sign "$identity" "$target_path"
   echo "Signed with $identity"
@@ -41,3 +53,4 @@ fi
 
 codesign --verify --verbose "$target_path"
 echo "Private binary: $target_path"
+echo "Codex support files: $support_target_dir"

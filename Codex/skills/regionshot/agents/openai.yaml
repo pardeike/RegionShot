@@ -1,0 +1,7 @@
+interface:
+  display_name: "RegionShot"
+  short_description: "Capture macOS app windows and AX actions"
+  default_prompt: "Use $regionshot to capture or inspect a macOS desktop app window, or to drive AX element actions through the installed regionshot binary."
+
+policy:
+  allow_implicit_invocation: true
