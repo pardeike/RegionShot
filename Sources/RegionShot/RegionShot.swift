@@ -376,14 +376,23 @@ private struct MenuBarItemEntry: Encodable {
 
 private enum MenuBarSurface {
     case menu(AXUIElement)
-    case window(CGRect)
+    case window(WindowSnapshot)
 
     var frame: CGRect? {
         switch self {
         case .menu(let element):
             return copyAXFrame(from: element)
-        case .window(let rect):
-            return rect
+        case .window(let snapshot):
+            return snapshot.bounds
+        }
+    }
+
+    var kind: String {
+        switch self {
+        case .menu:
+            return "AX menu"
+        case .window:
+            return "popover window"
         }
     }
 }
@@ -1530,8 +1539,7 @@ private func handleMenuBar(using command: MenuBarCommand) async throws -> String
         let outputURL = command.outputURL ?? temporaryOutputURL()
         let directoryURL = outputURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-        let region = try captureRegion(forMenuFrame: surface.frame, item: item)
-        try captureScreenRegion(region: region, outputURL: outputURL)
+        try captureMenuBarSurface(surface, item: item, outputURL: outputURL)
         return outputURL.path
     }
 }
@@ -2304,6 +2312,15 @@ private func openMenuBarSurface(
         Thread.sleep(forTimeInterval: 0.1)
     }
 
+    if let existingWindow = waitForStableMenuBarSurfaceWindow(
+        for: application,
+        near: item,
+        excludingWindowIDs: [],
+        timeout: 0.25
+    ) {
+        return .window(existingWindow)
+    }
+
     guard supportsAXAction(item.element, action: kAXPressAction as String) else {
         throw RegionShotError.accessibilityQueryFailed("Menu-bar item \(formatMenuBarCandidate(item)) does not support `AXPress`.")
     }
@@ -2314,21 +2331,11 @@ private func openMenuBarSurface(
             .map(\.windowID)
     )
 
-    var error = AXUIElementPerformAction(item.element, kAXPressAction as CFString)
+    let error = AXUIElementPerformAction(item.element, kAXPressAction as CFString)
     if let surface = waitForVisibleMenuBarSurface(
         for: item,
         application: application,
         excludingWindowIDs: excludedWindowIDs
-    ) {
-        return surface
-    }
-
-    Thread.sleep(forTimeInterval: 0.1)
-    error = AXUIElementPerformAction(item.element, kAXPressAction as CFString)
-    if let surface = waitForVisibleMenuBarSurface(
-        for: item,
-        application: application,
-        excludingWindowIDs: []
     ) {
         return surface
     }
@@ -2391,18 +2398,24 @@ private func waitForVisibleMenuBarSurface(
     timeout: TimeInterval = 1.5
 ) -> MenuBarSurface? {
     let deadline = Date().addingTimeInterval(timeout)
+    var lastMenuFrame: CGRect?
 
     repeat {
         if let menu = visibleMenu(for: item.element) {
-            return .menu(menu)
+            let frame = copyAXFrame(from: menu)
+            if let frame, let lastMenuFrame, nearlyEqual(frame, lastMenuFrame) {
+                return .menu(menu)
+            }
+            lastMenuFrame = frame
         }
 
-        if let windowFrame = visibleMenuBarSurfaceWindowFrame(
+        if let window = waitForStableMenuBarSurfaceWindow(
             for: application,
             near: item,
-            excludingWindowIDs: excludingWindowIDs
+            excludingWindowIDs: excludingWindowIDs,
+            timeout: 0.1
         ) {
-            return .window(windowFrame)
+            return .window(window)
         }
 
         Thread.sleep(forTimeInterval: 0.05)
@@ -2411,11 +2424,42 @@ private func waitForVisibleMenuBarSurface(
     return nil
 }
 
-private func visibleMenuBarSurfaceWindowFrame(
+private func waitForStableMenuBarSurfaceWindow(
+    for application: AutomationApplication,
+    near item: MenuBarCatalogItem,
+    excludingWindowIDs: Set<CGWindowID>,
+    timeout: TimeInterval = 1.0
+) -> WindowSnapshot? {
+    let deadline = Date().addingTimeInterval(timeout)
+    var previous: WindowSnapshot?
+
+    repeat {
+        if let current = visibleMenuBarSurfaceWindow(
+            for: application,
+            near: item,
+            excludingWindowIDs: excludingWindowIDs
+        ) {
+            if
+                let previous,
+                previous.windowID == current.windowID,
+                nearlyEqual(previous.bounds, current.bounds)
+            {
+                return current
+            }
+            previous = current
+        }
+
+        Thread.sleep(forTimeInterval: 0.05)
+    } while Date() < deadline
+
+    return previous
+}
+
+private func visibleMenuBarSurfaceWindow(
     for application: AutomationApplication,
     near item: MenuBarCatalogItem,
     excludingWindowIDs: Set<CGWindowID>
-) -> CGRect? {
+) -> WindowSnapshot? {
     guard let itemFrame = item.frame else {
         return nil
     }
@@ -2440,8 +2484,7 @@ private func visibleMenuBarSurfaceWindowFrame(
             let rightArea = right.bounds.width * right.bounds.height
             return leftArea < rightArea
         }
-        .first?
-        .bounds
+        .first
 }
 
 private func isLikelyMenuBarSurfaceWindow(_ windowFrame: CGRect, near itemFrame: CGRect) -> Bool {
@@ -2460,6 +2503,13 @@ private func isLikelyMenuBarSurfaceWindow(_ windowFrame: CGRect, near itemFrame:
         windowFrame.maxY >= itemFrame.minY - 220
 
     return horizontallyRelated && (belowMenuBar || aboveMenuBar)
+}
+
+private func nearlyEqual(_ lhs: CGRect, _ rhs: CGRect, tolerance: CGFloat = 1) -> Bool {
+    abs(lhs.minX - rhs.minX) <= tolerance &&
+    abs(lhs.minY - rhs.minY) <= tolerance &&
+    abs(lhs.width - rhs.width) <= tolerance &&
+    abs(lhs.height - rhs.height) <= tolerance
 }
 
 private func waitForMenuToClose(
@@ -2497,8 +2547,48 @@ private func closeMenuBarSurface(_ surface: MenuBarSurface, item: MenuBarCatalog
     switch surface {
     case .menu(let menu):
         cancelMenu(menu)
-    case .window:
-        _ = AXUIElementPerformAction(item.element, kAXPressAction as CFString)
+    case .window(let snapshot):
+        pressEscapeKey()
+        if !waitForWindowToClose(snapshot.windowID) {
+            _ = AXUIElementPerformAction(item.element, kAXPressAction as CFString)
+        }
+    }
+}
+
+private func waitForWindowToClose(
+    _ windowID: CGWindowID,
+    timeout: TimeInterval = 0.75
+) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+
+    repeat {
+        if !currentWindowSnapshots().contains(where: { $0.windowID == windowID }) {
+            return true
+        }
+        Thread.sleep(forTimeInterval: 0.05)
+    } while Date() < deadline
+
+    return false
+}
+
+private func pressEscapeKey() {
+    let source = CGEventSource(stateID: .hidSystemState)
+    CGEvent(keyboardEventSource: source, virtualKey: 53, keyDown: true)?.post(tap: .cghidEventTap)
+    CGEvent(keyboardEventSource: source, virtualKey: 53, keyDown: false)?.post(tap: .cghidEventTap)
+}
+
+private func captureMenuBarSurface(
+    _ surface: MenuBarSurface,
+    item: MenuBarCatalogItem,
+    outputURL: URL
+) throws {
+    let region = try captureRegion(forMenuFrame: surface.frame, item: item)
+    Thread.sleep(forTimeInterval: 0.1)
+
+    do {
+        try captureScreenRegion(region: region, outputURL: outputURL)
+    } catch RegionShotError.captureFailed(let message) {
+        throw RegionShotError.captureFailed("Failed to capture \(surface.kind) for \(formatMenuBarCandidate(item)) at `\(region.rectangleArgument)`: \(message)")
     }
 }
 
