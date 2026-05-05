@@ -3133,11 +3133,23 @@ private func closeMenuBarSurface(_ surface: MenuBarSurface, item: MenuBarCatalog
     case .menu(let menu):
         cancelMenu(menu)
     case .window(let snapshot):
-        pressEscapeKey()
-        if !waitForWindowToClose(snapshot.windowID) {
-            _ = AXUIElementPerformAction(item.element, kAXPressAction as CFString)
+        if windowClosesAfterPressingMenuBarItem(item, windowID: snapshot.windowID) {
+            return
         }
+
+        pressEscapeKey(inProcess: snapshot.ownerPID)
     }
+}
+
+private func windowClosesAfterPressingMenuBarItem(
+    _ item: MenuBarCatalogItem,
+    windowID: CGWindowID
+) -> Bool {
+    guard AXUIElementPerformAction(item.element, kAXPressAction as CFString) == .success else {
+        return false
+    }
+
+    return waitForWindowToClose(windowID)
 }
 
 private func waitForWindowToClose(
@@ -3156,10 +3168,10 @@ private func waitForWindowToClose(
     return false
 }
 
-private func pressEscapeKey() {
+private func pressEscapeKey(inProcess processID: pid_t) {
     let source = CGEventSource(stateID: .hidSystemState)
-    CGEvent(keyboardEventSource: source, virtualKey: 53, keyDown: true)?.post(tap: .cghidEventTap)
-    CGEvent(keyboardEventSource: source, virtualKey: 53, keyDown: false)?.post(tap: .cghidEventTap)
+    CGEvent(keyboardEventSource: source, virtualKey: 53, keyDown: true)?.postToPid(processID)
+    CGEvent(keyboardEventSource: source, virtualKey: 53, keyDown: false)?.postToPid(processID)
 }
 
 private func captureMenuBarSurface(
