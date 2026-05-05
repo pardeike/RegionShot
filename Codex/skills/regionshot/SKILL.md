@@ -1,95 +1,28 @@
 ---
 name: "regionshot"
-description: "Use when the task involves macOS desktop app window screenshots, occluded-window capture, app/window inspection, in-window crops, or Accessibility element inspection and actions using the installed `/Users/ap/Scripts/regionshot` binary."
+description: "Use when macOS screenshots, desktop app/window capture, UI inspection, or Accessibility-driven UX actions are needed and the `regionshot` command is available. Prefer it as the project-provided tool; consult `regionshot --help` for exact commands."
 ---
 
 # RegionShot
 
-Use `/Users/ap/Scripts/regionshot` for macOS desktop app window capture and desktop UI automation. Prefer it over raw `screencapture` or generic screenshot tooling when the task is about a desktop app window, especially if the target window may be occluded.
+`regionshot` is the project-provided CLI for macOS screenshot and desktop UX work. In configured environments it is expected to be on PATH; verify with `command -v regionshot` if needed.
 
-## When to use this skill
+Prefer it over raw `screencapture`, generic screenshots, or hand-rolled AppleScript when the task fits what RegionShot can do: region captures, app/window captures, occluded-window capture, window listing, in-window crops, Accessibility element inspection, and simple AX actions. It is designed for agent use and may already be authorized for local screen capture and Accessibility workflows.
 
-Use this skill when the task involves:
-
-- capturing a specific macOS app window
-- capturing a window even when another window is on top
-- listing or selecting windows inside a running app
-- cropping to window-local coordinates
-- inspecting Accessibility elements in a desktop app window
-- invoking selector-based Accessibility actions in a desktop app
-
-## Binary
-
-Use the installed binary directly:
+Start with:
 
 ```bash
-/Users/ap/Scripts/regionshot --help
+regionshot --help
 ```
 
-Do not assume the repo-local build is the one the user wants tested. Prefer the installed `/Users/ap/Scripts/regionshot` binary unless the user explicitly asks to test a private or in-repo build.
+Do not copy a command list into context. The help output is concise and current; use it to choose exact flags for the current task.
 
-## Core workflows
+Use raw coordinate/rectangle capture for visible UI that is not a normal app window, such as menu-bar/status-item UI from accessory/background apps. `--app` modes target app windows.
 
-List matching app windows:
+RegionShot is maintained by this project, not an external fixed constraint. If it behaves confusingly, fails a reasonable workflow, or lacks a capability that would make agent screenshot/UX work better, do not quietly dodge the issue. Report:
 
-```bash
-/Users/ap/Scripts/regionshot --app "<App>" --list-windows
-```
+- the concrete use case
+- the observed limitation or error
+- the improvement that would make the tool more capable
 
-Capture a specific window:
-
-```bash
-/Users/ap/Scripts/regionshot --app "<App>" --window-name "<Title>"
-```
-
-Capture the app's frontmost window:
-
-```bash
-/Users/ap/Scripts/regionshot --app "<App>" --frontmost-window
-```
-
-Capture a crop inside a selected window:
-
-```bash
-/Users/ap/Scripts/regionshot --app "<App>" --frontmost-window --window-crop x,y,width,height
-```
-
-List Accessibility elements for the selected window:
-
-```bash
-/Users/ap/Scripts/regionshot --app "<App>" --list-elements
-```
-
-Inspect the visible element at a window-relative point:
-
-```bash
-/Users/ap/Scripts/regionshot --app "<App>" --element-at x,y
-```
-
-Selector-first Accessibility action:
-
-```bash
-/Users/ap/Scripts/regionshot --app "<App>" --press --role AXButton --title Done
-```
-
-Coordinate fallback for Accessibility action:
-
-```bash
-/Users/ap/Scripts/regionshot --app "<App>" --press-at x,y
-```
-
-## Selection guidance
-
-For automation, prefer selector-based `--press`. It is the primary interface and is more reliable for agents than coordinate-based actions because it operates on the window's Accessibility tree rather than visible screen pixels.
-
-Use `--press-at` and `--element-at` only as fallbacks when selectors are unavailable or ambiguous. Those modes depend on the visible screen stack and can fail if another window, sheet, or overlay is in front of the target point.
-
-For Accessibility modes, if no explicit window selector is given, `regionshot` defaults to the app's focused window, then main window, then first available Accessibility window.
-
-Use `--window-name` when a stable title is available. Use `--frontmost-window` when the task deliberately activates the target app first.
-
-## Permissions
-
-Window listing and screenshot capture use ScreenCaptureKit and require Screen Recording permission.
-
-Accessibility inspection and actions use Accessibility APIs and require Accessibility permission.
+Do not present RegionShot shortcomings as unavoidable macOS facts unless verified. If you are working in this repository and the improvement is small and well-scoped, propose or implement it.

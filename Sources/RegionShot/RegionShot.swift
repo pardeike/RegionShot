@@ -423,6 +423,7 @@ Rules:
   accessibility inspection and actions require Accessibility permission
   rectangle mode without `--app` forwards to `screencapture -R`
   rectangle mode with `--app` includes only that app, even if covered by other windows
+  `--app` modes target app windows, not menu-bar/status-item UI from accessory/background apps
 """
 
 private let codexSkillName = "regionshot"
@@ -1330,6 +1331,32 @@ private func windowListApplication(for application: AutomationApplication) -> Wi
     )
 }
 
+private func windowlessApplicationMessage(
+    name: String,
+    bundleIdentifier: String,
+    processID: pid_t,
+    windowKind: String,
+    modeDescription: String
+) -> String {
+    let bundleSummary = bundleIdentifier.isEmpty ? "" : ", \(bundleIdentifier)"
+    let policyNote: String
+
+    switch NSRunningApplication(processIdentifier: processID)?.activationPolicy {
+    case .accessory?:
+        policyNote = " It is running as an accessory/background app, which commonly means menu-bar UI; menu bar items are not app windows."
+    case .prohibited?:
+        policyNote = " It is running as a background-only app and is not expected to expose normal app windows."
+    case .regular?:
+        policyNote = " It is a regular app, but no matching window is currently open or visible to this API."
+    case nil:
+        policyNote = ""
+    @unknown default:
+        policyNote = ""
+    }
+
+    return "`\(name)` was found (pid \(processID)\(bundleSummary)), but macOS exposed no \(windowKind) windows for it.\(policyNote) \(modeDescription) Use rectangle capture (`regionshot X Y WIDTH HEIGHT`) for menu-bar/status-item UI, or open a normal app window first."
+}
+
 private func windowListEntry(for window: CatalogWindow) -> WindowListEntry {
     WindowListEntry(
         index: window.index,
@@ -1398,7 +1425,15 @@ private func buildAccessibilityWindowCatalog(selector: ApplicationSelector) thro
         }
 
     guard !windows.isEmpty else {
-        throw RegionShotError.windowNotFound("No accessibility windows are currently available for `\(runningApplication.name)`.")
+        throw RegionShotError.windowNotFound(
+            windowlessApplicationMessage(
+                name: runningApplication.name,
+                bundleIdentifier: runningApplication.bundleIdentifier,
+                processID: runningApplication.processID,
+                windowKind: "accessibility app",
+                modeDescription: "`--list-elements`, `--press`, and related Accessibility modes operate inside app windows."
+            )
+        )
     }
 
     return AccessibilityWindowCatalog(
@@ -2011,7 +2046,15 @@ private func buildWindowCatalog(selector: ApplicationSelector, in shareableConte
     }
 
     guard !eligibleWindows.isEmpty else {
-        throw RegionShotError.windowNotFound("No capturable windows are currently available for `\(application.applicationName)`.")
+        throw RegionShotError.windowNotFound(
+            windowlessApplicationMessage(
+                name: application.applicationName,
+                bundleIdentifier: application.bundleIdentifier,
+                processID: application.processID,
+                windowKind: "capturable app",
+                modeDescription: "`--app` window listing and app/window capture only target app windows."
+            )
+        )
     }
 
     let windowsByID = Dictionary(uniqueKeysWithValues: eligibleWindows.map { ($0.windowID, $0) })

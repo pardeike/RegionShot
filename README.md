@@ -40,6 +40,8 @@ If `--app` is provided without rectangle coordinates or a specific window flag, 
 
 `--output` only applies to capture modes. If you pass `--app` without rectangle coordinates or a window selector, no file is written.
 
+`--app` modes target normal app windows. Accessory/background apps such as menu-bar utilities may resolve as running applications while exposing no capturable or accessibility windows; their status-menu items are not app windows. For visible menu-bar UI, use rectangle coordinates or open a normal app window first.
+
 Window indices are frontmost-first within the selected app.
 
 In `--app` rectangle mode the output contains only that application's windows inside the requested rectangle, even if other apps are visually in front.
