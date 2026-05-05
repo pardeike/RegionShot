@@ -4,6 +4,59 @@
 
 By default it creates a temporary file and prints the final path, which makes it easy to chain into other tooling without wasting screenshot context on the rest of the display.
 
+## Requirements
+
+- macOS 13 or newer.
+- Swift tools 6.2 or newer. If `swift --version` is not available, install Xcode or the Xcode command line tools with `xcode-select --install`.
+- Screen Recording permission for screenshot capture and ScreenCaptureKit app/window listing.
+- Accessibility permission for `--list-elements`, `--press`, `--press-at`, `--element-at`, and menu-bar modes.
+
+macOS grants those permissions to the host app that launches `regionshot`, such as Terminal, iTerm, or Codex. After granting permission in System Settings, rerun the command that prompted for it.
+
+## Install
+
+```bash
+./Scripts/install.sh
+command -v regionshot
+regionshot --help
+```
+
+The installer builds the release binary, installs it to `~/Scripts/regionshot`, copies the bundled Codex support files beside it, and signs the executable. It uses the first locally available `Apple Development` identity when one exists and falls back to ad-hoc signing otherwise.
+
+Both the release and private install paths copy the repo's `Codex/` support files beside the binary. On launch, `regionshot` will silently install or update `~/.codex/skills/regionshot` and a managed `regionshot` pointer block in `~/.codex/AGENTS.md` when those support files are present. If the support file structure is missing, the binary skips this step and continues normally.
+
+If `command -v regionshot` prints nothing, add `~/Scripts` to your zsh PATH:
+
+```bash
+echo 'export PATH="$HOME/Scripts:$PATH"' >> ~/.zprofile
+source ~/.zprofile
+```
+
+You can override the install directory or signing identity:
+
+```bash
+INSTALL_DIR="$HOME/bin" ./Scripts/install.sh
+CODESIGN_IDENTITY="Apple Development: Your Name (TEAMID)" ./Scripts/install.sh
+```
+
+For a repo-local prototype binary that does not touch `~/Scripts/regionshot`, use:
+
+```bash
+./Scripts/build-private.sh
+```
+
+That writes `.build/private-bin/regionshot-private`.
+
+## Quick Smoke Test
+
+```bash
+regionshot 0 0 200 200
+regionshot --find-app Terminal
+regionshot --app Terminal --list-visible-windows
+```
+
+If you are not using Terminal.app, replace `Terminal` with the app you are running commands from, or use `regionshot --find-app TEXT` to discover the exact name.
+
 ## Usage
 
 ```bash
@@ -84,36 +137,6 @@ App-filtered screenshot capture and `--list-windows` use the ScreenCaptureKit wi
 ScreenCaptureKit app/window operations time out after five seconds by default. Use `--timeout SECONDS` when the system is slow. Timeout errors suggest RegionShot visible-window fallback commands instead of hanging indefinitely.
 
 Accessibility inspection and actions use Accessibility APIs directly and require macOS Accessibility permission for the host process.
-
-## Install
-
-```bash
-./Scripts/install.sh
-```
-
-That script:
-
-- builds the package in release mode
-- installs the executable to `~/Scripts/regionshot`
-- installs the repo's `Codex/` support files beside the binary in `~/Scripts/.regionshot-support/Codex`
-- signs it with the first locally available `Apple Development` identity
-
-For a repo-local prototype binary that does not touch `~/Scripts/regionshot`, use:
-
-```bash
-./Scripts/build-private.sh
-```
-
-That writes a separately named binary to `.build/private-bin/regionshot-private`.
-
-Both the release and private install paths copy the repo's `Codex/` support files beside the binary. On launch, `regionshot` will silently install or update `~/.codex/skills/regionshot` and a managed `regionshot` pointer block in `~/.codex/AGENTS.md` when those support files are present. If the support file structure is missing, the binary skips this step and continues normally.
-
-You can override the signing identity or install directory:
-
-```bash
-CODESIGN_IDENTITY="Apple Development: Andreas Pardeike (MLYF6EP5DL)" ./Scripts/install.sh
-INSTALL_DIR="$HOME/bin" ./Scripts/install.sh
-```
 
 ## Notes
 

@@ -20,8 +20,7 @@ if [[ -z "$identity" ]]; then
 fi
 
 if [[ -z "$identity" ]]; then
-  echo "No Apple Development signing identity found. Set CODESIGN_IDENTITY to override." >&2
-  exit 1
+  identity="-"
 fi
 
 mkdir -p "$install_dir"
@@ -52,4 +51,8 @@ codesign --verify --verbose "$target_path"
 
 echo "Installed $product_name to $target_path"
 echo "Installed Codex support files to $support_target_dir"
-echo "Signed with $identity"
+if [[ "$identity" == "-" ]]; then
+  echo "Signed ad-hoc"
+else
+  echo "Signed with $identity"
+fi
