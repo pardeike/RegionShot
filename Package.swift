@@ -18,5 +18,9 @@ let package = Package(
         .executableTarget(
             name: "RegionShot"
         ),
+        .testTarget(
+            name: "RegionShotTests",
+            dependencies: ["RegionShot"]
+        ),
     ]
 )

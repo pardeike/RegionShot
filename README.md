@@ -8,14 +8,18 @@ By default it creates a temporary file and prints the final path, which makes it
 
 ```bash
 regionshot
+regionshot --find-app RimWorld
 regionshot 120 240 800 600
 regionshot --x 120 --y 240 --width 800 --height 600
 regionshot --app "System Settings"
 regionshot --app "System Settings" --list-windows
 regionshot --app "System Settings" --frontmost-window
+regionshot --app "System Settings" --frontmost-window --timeout 10
 regionshot --app "System Settings" --frontmost-window --window-crop 40,80,300,160
 regionshot --app "System Settings" --window-index 0
 regionshot --app "System Settings" --window-name "<window title>"
+regionshot --app "RimWorld" --list-visible-windows
+regionshot --app "RimWorld" --visible-window
 regionshot --app "Drafty" --list-menu-bar-items
 regionshot --app "Drafty" --capture-menu
 regionshot --app "Drafty" --menu-bar-index 0 --capture-menu
@@ -39,6 +43,8 @@ With `--app`, the value may be either:
 - a bundle identifier such as `com.apple.systempreferences`
 - a process id such as `12345`
 
+If you do not know the exact running app name, use `--find-app TEXT`. It prints compact JSON with matching app names, pids, bundle identifiers, paths, activation policy, and visible-window counts.
+
 If `--app` is provided without rectangle coordinates or a specific window flag, `regionshot` prints a JSON window list to stdout for inspection.
 
 `--output` only applies to capture modes. If you pass `--app` without rectangle coordinates or a window selector, no file is written.
@@ -46,6 +52,8 @@ If `--app` is provided without rectangle coordinates or a specific window flag, 
 App/window modes target normal app windows. Accessory/background apps such as menu-bar utilities may resolve as running applications while exposing no capturable or accessibility windows; use menu-bar modes for their status items and menus.
 
 Window indices are frontmost-first within the selected app.
+
+`--list-visible-windows` and `--visible-window` use the current CGWindowList visible-window stack instead of ScreenCaptureKit app/window capture. This is the fallback for apps where semantic app/window capture is unavailable or times out, and for cases where visible pixels are exactly what you want. It captures whatever is visible in that rectangle, so windows in front of the target are included.
 
 In `--app` rectangle mode the output contains only that application's windows inside the requested rectangle, even if other apps are visually in front.
 
@@ -72,6 +80,8 @@ If a selector is ambiguous, the command fails and prints a short candidate list 
 `--element-at x,y` hit-tests the visible accessibility element at a window-relative point and prints JSON for the hit element plus its ancestor chain. This uses the visible screen stack, so another window or overlay in front can change the result.
 
 App-filtered screenshot capture and `--list-windows` use the ScreenCaptureKit window catalog, so they require macOS Screen Recording permission for the host process.
+
+ScreenCaptureKit app/window operations time out after five seconds by default. Use `--timeout SECONDS` when the system is slow. Timeout errors suggest RegionShot visible-window fallback commands instead of hanging indefinitely.
 
 Accessibility inspection and actions use Accessibility APIs directly and require macOS Accessibility permission for the host process.
 

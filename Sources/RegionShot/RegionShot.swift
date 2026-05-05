@@ -4,7 +4,7 @@ import ApplicationServices
 import CoreGraphics
 import Foundation
 import ImageIO
-import ScreenCaptureKit
+@preconcurrency import ScreenCaptureKit
 import UniformTypeIdentifiers
 
 @main
@@ -18,11 +18,20 @@ struct RegionShot {
             switch behavior {
             case .showHelp:
                 print(usageText)
+            case .findApps(let command):
+                let json = try findApps(using: command)
+                print(json)
             case .capture(let command):
                 try await capture(using: command)
                 print(command.outputURL.path)
+            case .captureVisibleWindow(let command):
+                try captureVisibleWindow(using: command)
+                print(command.outputURL.path)
             case .listWindows(let command):
                 let json = try await listWindows(using: command)
+                print(json)
+            case .listVisibleWindows(let command):
+                let json = try listVisibleWindows(using: command)
                 print(json)
             case .inspectAccessibility(let command):
                 let json = try await inspectAccessibility(using: command)
@@ -42,40 +51,60 @@ struct RegionShot {
     }
 }
 
-private enum CommandBehavior: Sendable {
+enum CommandBehavior: Sendable {
     case showHelp
+    case findApps(FindAppsCommand)
     case capture(CaptureCommand)
+    case captureVisibleWindow(VisibleWindowCaptureCommand)
     case listWindows(ListWindowsCommand)
+    case listVisibleWindows(VisibleWindowsCommand)
     case inspectAccessibility(AccessibilityCommand)
     case menuBar(MenuBarCommand)
 }
 
-private struct CaptureCommand: Sendable {
+struct CaptureCommand: Sendable {
     let region: CaptureRegion?
     let outputURL: URL
     let applicationSelector: ApplicationSelector?
     let windowSelection: WindowSelection?
     let windowCrop: WindowCropRect?
+    let screenCaptureTimeout: TimeInterval
 }
 
-private struct ListWindowsCommand: Sendable {
+struct FindAppsCommand: Sendable {
+    let query: String
+}
+
+struct ListWindowsCommand: Sendable {
+    let applicationSelector: ApplicationSelector
+    let screenCaptureTimeout: TimeInterval
+}
+
+struct VisibleWindowsCommand: Sendable {
     let applicationSelector: ApplicationSelector
 }
 
-private struct AccessibilityCommand: Sendable {
+struct VisibleWindowCaptureCommand: Sendable {
+    let applicationSelector: ApplicationSelector
+    let windowSelection: WindowSelection?
+    let windowCrop: WindowCropRect?
+    let outputURL: URL
+}
+
+struct AccessibilityCommand: Sendable {
     let applicationSelector: ApplicationSelector
     let windowSelection: WindowSelection?
     let mode: AccessibilityMode
 }
 
-private struct MenuBarCommand: Sendable {
+struct MenuBarCommand: Sendable {
     let applicationSelector: ApplicationSelector
     let selection: MenuBarSelection?
     let mode: MenuBarMode
     let outputURL: URL?
 }
 
-private struct AccessibilitySelector: Sendable {
+struct AccessibilitySelector: Sendable {
     let role: String?
     let subrole: String?
     let title: String?
@@ -91,7 +120,7 @@ private struct AccessibilitySelector: Sendable {
     }
 }
 
-private struct CaptureRegion: Sendable {
+struct CaptureRegion: Sendable {
     let x: Int
     let y: Int
     let width: Int
@@ -106,7 +135,7 @@ private struct CaptureRegion: Sendable {
     }
 }
 
-private struct WindowCropRect: Sendable {
+struct WindowCropRect: Sendable {
     let x: Int
     let y: Int
     let width: Int
@@ -117,7 +146,7 @@ private struct WindowCropRect: Sendable {
     }
 }
 
-private struct WindowPoint: Sendable {
+struct WindowPoint: Sendable {
     let x: Int
     let y: Int
 
@@ -126,7 +155,7 @@ private struct WindowPoint: Sendable {
     }
 }
 
-private enum ApplicationSelector: Sendable {
+enum ApplicationSelector: Sendable {
     case processID(pid_t)
     case name(String)
 
@@ -146,28 +175,37 @@ private enum ApplicationSelector: Sendable {
             return name
         }
     }
+
+    var commandArgument: String {
+        switch self {
+        case .processID(let processID):
+            return "\(processID)"
+        case .name(let name):
+            return name
+        }
+    }
 }
 
-private enum WindowSelection: Sendable {
+enum WindowSelection: Sendable {
     case frontmost
     case index(Int)
     case name(String)
 }
 
-private enum AccessibilityMode: Sendable {
+enum AccessibilityMode: Sendable {
     case listElements
     case elementAt(WindowPoint)
     case pressAt(WindowPoint)
     case pressElement(AccessibilitySelector)
 }
 
-private enum MenuBarMode: Sendable {
+enum MenuBarMode: Sendable {
     case listItems
     case pressItem
     case captureMenu
 }
 
-private enum MenuBarSelection: Sendable {
+enum MenuBarSelection: Sendable {
     case index(Int)
     case name(String)
 }
@@ -189,6 +227,11 @@ private struct AppWindowCatalog {
     let windows: [CatalogWindow]
 }
 
+private struct VisibleWindowCatalog {
+    let application: AutomationApplication
+    let windows: [VisibleCatalogWindow]
+}
+
 private struct AutomationApplication {
     let name: String
     let bundleIdentifier: String
@@ -204,6 +247,14 @@ private struct CatalogWindow {
     let isOnScreen: Bool
     let isActive: Bool
     let scWindow: SCWindow
+}
+
+struct VisibleCatalogWindow {
+    let index: Int
+    let windowID: CGWindowID
+    let title: String?
+    let frame: CGRect
+    let layer: Int
 }
 
 private struct AccessibilityWindowCatalog {
@@ -239,12 +290,29 @@ private struct MenuBarCatalogItem {
     let element: AXUIElement
 }
 
-private struct WindowSnapshot {
+struct WindowSnapshot {
     let windowID: CGWindowID
     let ownerPID: pid_t
     let title: String?
     let bounds: CGRect
     let layer: Int
+    let alpha: Double
+}
+
+private struct RunningApplicationSearchResponse: Encodable {
+    let query: String
+    let matches: [RunningApplicationEntry]
+}
+
+private struct RunningApplicationEntry: Encodable {
+    let index: Int
+    let processID: Int32
+    let name: String
+    let bundleIdentifier: String
+    let activationPolicy: String
+    let bundlePath: String?
+    let executablePath: String?
+    let visibleWindowCount: Int
 }
 
 private struct WindowListResponse: Encodable {
@@ -266,6 +334,20 @@ private struct WindowListEntry: Encodable {
     let layer: Int
     let isOnScreen: Bool
     let isActive: Bool
+}
+
+private struct VisibleWindowListResponse: Encodable {
+    let application: WindowListApplication
+    let captureSemantics: String
+    let windows: [VisibleWindowEntry]
+}
+
+private struct VisibleWindowEntry: Encodable {
+    let index: Int
+    let windowID: UInt32
+    let title: String?
+    let frame: JSONRect
+    let layer: Int
 }
 
 private struct JSONRect: Encodable {
@@ -409,7 +491,22 @@ private struct AccessibilityElementCandidate {
     let actions: [String]
 }
 
-private enum RegionShotError: LocalizedError {
+private struct RunningApplicationMatch {
+    let application: NSRunningApplication
+    let score: Int
+    let visibleWindowCount: Int
+    let activationRank: Int
+}
+
+@available(macOS 14.0, *)
+private struct ShareableApplicationMatch {
+    let application: SCRunningApplication
+    let score: Int
+    let visibleWindowCount: Int
+    let activationRank: Int
+}
+
+enum RegionShotError: LocalizedError, Sendable {
     case invalidArguments(String)
     case invalidInteger(flag: String, value: String)
     case invalidRegion(String)
@@ -421,6 +518,7 @@ private enum RegionShotError: LocalizedError {
     case windowNotFound(String)
     case ambiguousWindow(String)
     case captureFailed(String)
+    case operationTimedOut(String)
     case accessibilityQueryFailed(String)
     case encodeFailed(String)
 
@@ -448,6 +546,8 @@ private enum RegionShotError: LocalizedError {
             return message
         case .captureFailed(let message):
             return message
+        case .operationTimedOut(let message):
+            return message
         case .accessibilityQueryFailed(let message):
             return message
         case .encodeFailed(let message):
@@ -459,11 +559,13 @@ private enum RegionShotError: LocalizedError {
         switch self {
         case .invalidArguments, .invalidInteger, .invalidRegion:
             return 64
-        case .unsupportedFeature, .capturePermissionDenied, .accessibilityPermissionDenied, .applicationNotFound, .ambiguousApplication, .windowNotFound, .ambiguousWindow, .captureFailed, .accessibilityQueryFailed, .encodeFailed:
+        case .unsupportedFeature, .capturePermissionDenied, .accessibilityPermissionDenied, .applicationNotFound, .ambiguousApplication, .windowNotFound, .ambiguousWindow, .captureFailed, .operationTimedOut, .accessibilityQueryFailed, .encodeFailed:
             return 1
         }
     }
 }
+
+private let defaultScreenCaptureKitTimeout: TimeInterval = 5.0
 
 private let usageText = """
 regionshot = macOS screenshot wrapper around native `screencapture` and `ScreenCaptureKit`.
@@ -474,12 +576,15 @@ Output:
   errors -> stderr, non-zero exit
 
 Forms:
+  regionshot --find-app TEXT
   regionshot X Y WIDTH HEIGHT [--app APP] [--output FILE]
   regionshot --x X --y Y --width WIDTH --height HEIGHT [--app APP] [--output FILE]
-  regionshot --app APP
-  regionshot --app APP --frontmost-window [--window-crop X,Y,W,H] [--output FILE]
-  regionshot --app APP --window-index N [--window-crop X,Y,W,H] [--output FILE]
-  regionshot --app APP --window-name TITLE [--window-crop X,Y,W,H] [--output FILE]
+  regionshot --app APP [--timeout SECONDS]
+  regionshot --app APP --frontmost-window [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS]
+  regionshot --app APP --window-index N [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS]
+  regionshot --app APP --window-name TITLE [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS]
+  regionshot --app APP --list-visible-windows
+  regionshot --app APP --visible-window [--window-index N | --window-name TITLE | --frontmost-window] [--window-crop X,Y,W,H] [--output FILE]
   regionshot --app APP --list-menu-bar-items
   regionshot --app APP --capture-menu [--output FILE]
   regionshot --app APP --menu-bar-index N --press
@@ -505,8 +610,12 @@ Forms:
 
 Rules:
   `--app` accepts app name, bundle id, or pid
+  use `--find-app TEXT` when the exact running app name or pid is unknown
   `--app` alone == inspect mode == same as `--list-windows`
   window list JSON includes frontmost-first indices, titles, and bounds
+  `--visible-window` uses visible pixels from the current screen; occluding windows are included
+  `--list-visible-windows` and `--visible-window` use CGWindowList and do not depend on ScreenCaptureKit window capture
+  ScreenCaptureKit app/window operations time out after 5 seconds by default; use `--timeout SECONDS` to adjust
   menu-bar item list JSON includes status-item/app-menu indices, roles, actions, and bounds
   `--capture-menu` opens the selected menu-bar item, captures the visible menu or popover, and closes it
   `--window-crop` is relative to the selected window's top-left in points
@@ -520,6 +629,7 @@ Rules:
   accessibility inspection and actions require Accessibility permission
   rectangle mode without `--app` forwards to `screencapture -R`
   rectangle mode with `--app` includes only that app, even if covered by other windows
+  if ScreenCaptureKit app/window capture times out, try `--visible-window` for visible-pixel capture
   app/window modes target app windows; use menu-bar modes for status-item UI from accessory/background apps
 """
 
@@ -812,7 +922,7 @@ private func ensureTrailingNewline(in value: String) -> String {
     return trimmed.isEmpty ? "" : trimmed + "\n"
 }
 
-private func parse(arguments: [String]) throws -> CommandBehavior {
+func parse(arguments: [String]) throws -> CommandBehavior {
     guard !arguments.isEmpty else {
         return .showHelp
     }
@@ -824,9 +934,13 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
     }
 
     let applicationSelector = parsed.values["--app"].map(ApplicationSelector.init(rawValue:))
+    let findAppQuery = normalizedArgumentValue(parsed.values["--find-app"])
     let windowSelection = try parseWindowSelection(parsed)
     let windowCrop = try parseWindowCrop(parsed.values["--window-crop"])
+    let screenCaptureTimeout = try parseTimeout(parsed.values["--timeout"])
     let wantsWindowList = parsed.flags.contains("--list-windows")
+    let wantsVisibleWindowList = parsed.flags.contains("--list-visible-windows")
+    let wantsVisibleWindowCapture = parsed.flags.contains("--visible-window")
     let wantsMenuBarList = parsed.flags.contains("--list-menu-bar-items")
     let wantsCaptureMenu = parsed.flags.contains("--capture-menu")
     let menuBarSelection = try parseMenuBarSelection(parsed)
@@ -838,6 +952,21 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
     let pressPoint = try parseWindowPoint(parsed.values["--press-at"], flag: "--press-at")
     let selector = parseAccessibilitySelector(from: parsed.values)
     let outputPath = parsed.values["--output"]
+
+    if parsed.values["--find-app"] != nil, findAppQuery == nil {
+        throw RegionShotError.invalidArguments("`--find-app` requires a non-empty search string.")
+    }
+
+    if let findAppQuery {
+        let hasOtherValue = parsed.values.keys.contains(where: { key in key != "--find-app" })
+        let hasOtherFlag = parsed.flags.contains(where: { flag in flag != "--help" && flag != "-h" })
+
+        if parsed.region != nil || hasOtherValue || hasOtherFlag {
+            throw RegionShotError.invalidArguments("`--find-app` cannot be combined with other command flags or rectangle coordinates.")
+        }
+
+        return .findApps(FindAppsCommand(query: findAppQuery))
+    }
 
     let accessibilityModeCount = [
         wantsElementList ? 1 : 0,
@@ -858,6 +987,15 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
 
     if menuBarModeCount > 1 {
         throw RegionShotError.invalidArguments("Choose only one of `--list-menu-bar-items`, menu-bar `--press`, or `--capture-menu`.")
+    }
+
+    let visibleWindowModeCount = [
+        wantsVisibleWindowList ? 1 : 0,
+        wantsVisibleWindowCapture ? 1 : 0,
+    ].reduce(0, +)
+
+    if visibleWindowModeCount > 1 {
+        throw RegionShotError.invalidArguments("Choose only one of `--list-visible-windows` or `--visible-window`.")
     }
 
     let accessibilityMode: AccessibilityMode?
@@ -896,6 +1034,14 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
         throw RegionShotError.invalidArguments("`--list-windows` requires `--app <name-or-pid>`.")
     }
 
+    if wantsVisibleWindowList, applicationSelector == nil {
+        throw RegionShotError.invalidArguments("`--list-visible-windows` requires `--app <name-or-pid>`.")
+    }
+
+    if wantsVisibleWindowCapture, applicationSelector == nil {
+        throw RegionShotError.invalidArguments("`--visible-window` requires `--app <name-or-pid>`.")
+    }
+
     if menuBarMode != nil, applicationSelector == nil {
         throw RegionShotError.invalidArguments("Menu-bar inspection and actions require `--app <name-or-pid>`.")
     }
@@ -926,6 +1072,38 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
 
     if wantsWindowList, outputPath != nil {
         throw RegionShotError.invalidArguments("`--list-windows` prints JSON to stdout and does not use `--output`.")
+    }
+
+    if wantsWindowList, wantsVisibleWindowCapture || wantsVisibleWindowList {
+        throw RegionShotError.invalidArguments("`--list-windows` cannot be combined with visible-window modes.")
+    }
+
+    if wantsVisibleWindowList, parsed.region != nil {
+        throw RegionShotError.invalidArguments("`--list-visible-windows` cannot be combined with rectangle coordinates.")
+    }
+
+    if wantsVisibleWindowList, windowSelection != nil {
+        throw RegionShotError.invalidArguments("`--list-visible-windows` cannot be combined with `--frontmost-window`, `--window-index`, or `--window-name`.")
+    }
+
+    if wantsVisibleWindowList, windowCrop != nil {
+        throw RegionShotError.invalidArguments("`--list-visible-windows` cannot be combined with `--window-crop`.")
+    }
+
+    if wantsVisibleWindowList, outputPath != nil {
+        throw RegionShotError.invalidArguments("`--list-visible-windows` prints JSON to stdout and does not use `--output`.")
+    }
+
+    if wantsVisibleWindowList, accessibilityMode != nil || menuBarMode != nil {
+        throw RegionShotError.invalidArguments("`--list-visible-windows` cannot be combined with menu-bar or Accessibility modes.")
+    }
+
+    if wantsVisibleWindowCapture, parsed.region != nil {
+        throw RegionShotError.invalidArguments("`--visible-window` cannot be combined with rectangle coordinates.")
+    }
+
+    if wantsVisibleWindowCapture, accessibilityMode != nil || menuBarMode != nil || wantsWindowList {
+        throw RegionShotError.invalidArguments("`--visible-window` cannot be combined with ScreenCaptureKit window listing, menu-bar modes, or Accessibility modes.")
     }
 
     if menuBarMode != nil, parsed.region != nil {
@@ -996,7 +1174,7 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
         throw RegionShotError.invalidArguments("Rectangle capture cannot be combined with `--window-crop`. `--window-crop` is relative to a selected app window.")
     }
 
-    if windowCrop != nil, windowSelection == nil {
+    if windowCrop != nil, windowSelection == nil, !wantsVisibleWindowCapture {
         throw RegionShotError.invalidArguments("`--window-crop` requires one of `--frontmost-window`, `--window-index`, or `--window-name`.")
     }
 
@@ -1011,14 +1189,34 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
         )
     }
 
-    if applicationSelector != nil, parsed.region == nil, windowSelection == nil, outputPath != nil {
-        throw RegionShotError.invalidArguments("`--output` requires a capture mode. Use rectangle coordinates or one of `--frontmost-window`, `--window-index`, or `--window-name`. `--app` alone lists windows as JSON.")
+    if applicationSelector != nil, parsed.region == nil, windowSelection == nil, outputPath != nil, !wantsVisibleWindowCapture {
+        throw RegionShotError.invalidArguments("`--output` requires a capture mode. Use rectangle coordinates, `--visible-window`, or one of `--frontmost-window`, `--window-index`, or `--window-name`. `--app` alone lists windows as JSON.")
+    }
+
+    if wantsVisibleWindowList {
+        return .listVisibleWindows(
+            VisibleWindowsCommand(
+                applicationSelector: applicationSelector!
+            )
+        )
+    }
+
+    if wantsVisibleWindowCapture {
+        return .captureVisibleWindow(
+            VisibleWindowCaptureCommand(
+                applicationSelector: applicationSelector!,
+                windowSelection: windowSelection,
+                windowCrop: windowCrop,
+                outputURL: try outputURL(from: outputPath)
+            )
+        )
     }
 
     if wantsWindowList || (applicationSelector != nil && parsed.region == nil && windowSelection == nil && accessibilityMode == nil) {
         return .listWindows(
             ListWindowsCommand(
-                applicationSelector: applicationSelector!
+                applicationSelector: applicationSelector!,
+                screenCaptureTimeout: screenCaptureTimeout
             )
         )
     }
@@ -1044,7 +1242,8 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
             outputURL: outputURL,
             applicationSelector: applicationSelector,
             windowSelection: windowSelection,
-            windowCrop: windowCrop
+            windowCrop: windowCrop,
+            screenCaptureTimeout: screenCaptureTimeout
         )
     )
 }
@@ -1097,10 +1296,10 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         let argument = arguments[index]
 
         switch argument {
-        case "--help", "-h", "--list-windows", "--frontmost-window", "--list-elements", "--list-menu-bar-items", "--press", "--press-element", "--capture-menu":
+        case "--help", "-h", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-elements", "--list-menu-bar-items", "--press", "--press-element", "--capture-menu":
             flags.insert(argument)
             index += 1
-        case "--x", "--y", "--width", "--height", "--output", "--app", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description":
+        case "--x", "--y", "--width", "--height", "--output", "--app", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description":
             let valueIndex = index + 1
             guard valueIndex < arguments.count else {
                 throw RegionShotError.invalidArguments("Missing value for \(argument).")
@@ -1302,6 +1501,18 @@ private func parseInteger(_ value: String, flag: String) throws -> Int {
     return integer
 }
 
+private func parseTimeout(_ rawValue: String?) throws -> TimeInterval {
+    guard let rawValue else {
+        return defaultScreenCaptureKitTimeout
+    }
+
+    guard let timeout = TimeInterval(rawValue), timeout > 0 else {
+        throw RegionShotError.invalidArguments("`--timeout` requires a positive number of seconds.")
+    }
+
+    return timeout
+}
+
 private func validate(region: CaptureRegion) throws {
     guard region.width > 0 else {
         throw RegionShotError.invalidRegion("Width must be greater than zero.")
@@ -1321,12 +1532,21 @@ private func capture(using command: CaptureCommand) async throws {
             throw RegionShotError.unsupportedFeature("App-filtered capture requires macOS 14 or newer.")
         }
 
-        let shareableContent = try await loadShareableContent()
+        let shareableContent = try await loadShareableContent(
+            timeout: command.screenCaptureTimeout,
+            selector: applicationSelector
+        )
         let catalog = try buildWindowCatalog(selector: applicationSelector, in: shareableContent)
 
         if let windowSelection = command.windowSelection {
             let window = try selectWindow(from: catalog, using: windowSelection)
-            try await captureWindow(window, crop: command.windowCrop, outputURL: command.outputURL)
+            try await captureWindow(
+                window,
+                crop: command.windowCrop,
+                outputURL: command.outputURL,
+                timeout: command.screenCaptureTimeout,
+                selector: applicationSelector
+            )
             return
         }
 
@@ -1339,7 +1559,9 @@ private func capture(using command: CaptureCommand) async throws {
             windows: catalog.windows.map(\.scWindow),
             displays: shareableContent.displays,
             region: region,
-            outputURL: command.outputURL
+            outputURL: command.outputURL,
+            timeout: command.screenCaptureTimeout,
+            selector: applicationSelector
         )
         return
     }
@@ -1388,7 +1610,10 @@ private func listWindows(using command: ListWindowsCommand) async throws -> Stri
         throw RegionShotError.unsupportedFeature("Window inspection requires macOS 14 or newer.")
     }
 
-    let shareableContent = try await loadShareableContent()
+    let shareableContent = try await loadShareableContent(
+        timeout: command.screenCaptureTimeout,
+        selector: command.applicationSelector
+    )
     let catalog = try buildWindowCatalog(selector: command.applicationSelector, in: shareableContent)
 
     let response = WindowListResponse(
@@ -1544,6 +1769,50 @@ private func handleMenuBar(using command: MenuBarCommand) async throws -> String
     }
 }
 
+private func findApps(using command: FindAppsCommand) throws -> String {
+    let matches = rankedRunningApplicationMatches(query: command.query)
+        .enumerated()
+        .map { offset, match in
+            runningApplicationEntry(
+                for: match.application,
+                index: offset,
+                visibleWindowCount: match.visibleWindowCount
+            )
+        }
+
+    return try encodeJSON(
+        RunningApplicationSearchResponse(
+            query: command.query,
+            matches: matches
+        )
+    )
+}
+
+private func listVisibleWindows(using command: VisibleWindowsCommand) throws -> String {
+    let catalog = try buildVisibleWindowCatalog(selector: command.applicationSelector)
+    let response = VisibleWindowListResponse(
+        application: windowListApplication(for: catalog.application),
+        captureSemantics: "visible-pixels; other windows in front of the target window are included",
+        windows: catalog.windows.map(visibleWindowEntry(for:))
+    )
+    return try encodeJSON(response)
+}
+
+private func captureVisibleWindow(using command: VisibleWindowCaptureCommand) throws {
+    let directoryURL = command.outputURL.deletingLastPathComponent()
+    try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+
+    let catalog = try buildVisibleWindowCatalog(selector: command.applicationSelector)
+    let window = try selectVisibleWindow(from: catalog, using: command.windowSelection)
+    let region = try captureRegion(forVisibleWindow: window, crop: command.windowCrop)
+
+    do {
+        try captureScreenRegion(region: region, outputURL: command.outputURL)
+    } catch RegionShotError.captureFailed(let message) {
+        throw RegionShotError.captureFailed("Failed to capture visible window [\(window.index)] \(displayTitle(window.title)) for `\(catalog.application.name)` at `\(region.rectangleArgument)`: \(message)")
+    }
+}
+
 private func encodeJSON<T: Encodable>(_ value: T) throws -> String {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -1607,6 +1876,16 @@ private func windowListEntry(for window: CatalogWindow) -> WindowListEntry {
         layer: window.layer,
         isOnScreen: window.isOnScreen,
         isActive: window.isActive
+    )
+}
+
+private func visibleWindowEntry(for window: VisibleCatalogWindow) -> VisibleWindowEntry {
+    VisibleWindowEntry(
+        index: window.index,
+        windowID: window.windowID,
+        title: normalizedTitle(window.title),
+        frame: JSONRect(window.frame),
+        layer: window.layer
     )
 }
 
@@ -1815,6 +2094,135 @@ private func formatMenuBarCandidate(_ item: MenuBarCatalogItem) -> String {
     return "[\(item.index)] \(item.source) \(role)\(subrole)\(title)\(description)\(identifier)\(frame)"
 }
 
+private func buildVisibleWindowCatalog(selector: ApplicationSelector) throws -> VisibleWindowCatalog {
+    let runningApplication = try resolveAutomationApplication(selector: selector)
+    let windows = visibleWindows(
+        for: runningApplication.processID,
+        snapshots: currentWindowSnapshots()
+    )
+
+    guard !windows.isEmpty else {
+        throw RegionShotError.windowNotFound(
+            windowlessApplicationMessage(
+                name: runningApplication.name,
+                bundleIdentifier: runningApplication.bundleIdentifier,
+                processID: runningApplication.processID,
+                windowKind: "visible",
+                modeDescription: "`--list-visible-windows` and `--visible-window` use currently visible app windows and capture visible pixels only."
+            )
+        )
+    }
+
+    return VisibleWindowCatalog(
+        application: runningApplication,
+        windows: windows
+    )
+}
+
+func visibleWindows(
+    for processID: pid_t,
+    snapshots: [WindowSnapshot]
+) -> [VisibleCatalogWindow] {
+    snapshots
+        .filter { snapshot in
+            snapshot.ownerPID == processID &&
+            snapshot.layer == 0 &&
+            snapshot.alpha > 0 &&
+            !snapshot.bounds.isEmpty
+        }
+        .enumerated()
+        .map { offset, snapshot in
+            VisibleCatalogWindow(
+                index: offset,
+                windowID: snapshot.windowID,
+                title: snapshot.title,
+                frame: snapshot.bounds,
+                layer: snapshot.layer
+            )
+        }
+}
+
+private func selectVisibleWindow(
+    from catalog: VisibleWindowCatalog,
+    using selection: WindowSelection?
+) throws -> VisibleCatalogWindow {
+    guard let selection else {
+        guard let first = catalog.windows.first else {
+            throw RegionShotError.windowNotFound("`\(catalog.application.name)` has no visible windows.")
+        }
+        return first
+    }
+
+    switch selection {
+    case .frontmost:
+        guard let first = catalog.windows.first else {
+            throw RegionShotError.windowNotFound("`\(catalog.application.name)` has no visible windows.")
+        }
+        return first
+    case .index(let index):
+        guard let window = catalog.windows.first(where: { $0.index == index }) else {
+            throw RegionShotError.windowNotFound("No visible window at index \(index) for `\(catalog.application.name)`. Run `regionshot --app \"\(catalog.application.name)\" --list-visible-windows` to inspect available windows.")
+        }
+        return window
+    case .name(let query):
+        let normalizedQuery = query.lowercased()
+        let exactMatches = catalog.windows.filter { ($0.title ?? "").lowercased() == normalizedQuery }
+
+        if exactMatches.count == 1, let match = exactMatches.first {
+            return match
+        }
+
+        let partialMatches = catalog.windows.filter { ($0.title ?? "").lowercased().contains(normalizedQuery) }
+        let matches = exactMatches.isEmpty ? partialMatches : exactMatches
+
+        guard !matches.isEmpty else {
+            throw RegionShotError.windowNotFound("No visible window named `\(query)` was found for `\(catalog.application.name)`. Run `regionshot --app \"\(catalog.application.name)\" --list-visible-windows` to inspect available windows.")
+        }
+
+        guard matches.count == 1, let match = matches.first else {
+            let suggestions = matches
+                .prefix(5)
+                .map { "[\($0.index)] \(displayTitle($0.title))" }
+                .joined(separator: ", ")
+            throw RegionShotError.ambiguousWindow("More than one visible window matches `\(query)`: \(suggestions)")
+        }
+
+        return match
+    }
+}
+
+private func captureRegion(
+    forVisibleWindow window: VisibleCatalogWindow,
+    crop: WindowCropRect?
+) throws -> CaptureRegion {
+    let captureRect: CGRect
+
+    if let crop {
+        try validate(windowCrop: crop, within: window.frame, windowTitle: displayTitle(window.title))
+        captureRect = CGRect(
+            x: window.frame.minX + CGFloat(crop.x),
+            y: window.frame.minY + CGFloat(crop.y),
+            width: CGFloat(crop.width),
+            height: CGFloat(crop.height)
+        )
+    } else {
+        captureRect = window.frame
+    }
+
+    let minX = Int(floor(captureRect.minX))
+    let minY = Int(floor(captureRect.minY))
+    let maxX = Int(ceil(captureRect.maxX))
+    let maxY = Int(ceil(captureRect.maxY))
+    let region = CaptureRegion(
+        x: minX,
+        y: minY,
+        width: maxX - minX,
+        height: maxY - minY
+    )
+    try validate(region: region)
+    return region
+}
+
 private func buildAccessibilityWindowCatalog(selector: ApplicationSelector) throws -> AccessibilityWindowCatalog {
     let runningApplication = try resolveAutomationApplication(selector: selector)
     let applicationElement = AXUIElementCreateApplication(runningApplication.processID)
@@ -1878,39 +2286,35 @@ private func resolveAutomationApplication(selector: ApplicationSelector) throws 
         }
         return automationApplication(from: application)
     case .name(let query):
-        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !normalizedQuery.isEmpty else {
+        guard normalizedSelectorText(query) != nil else {
             throw RegionShotError.invalidArguments("`--app` requires a non-empty name or process id.")
         }
 
-        let exactMatches = runningApplications.filter { application in
-            let name = (application.localizedName ?? "").lowercased()
-            let bundleIdentifier = (application.bundleIdentifier ?? "").lowercased()
-            return name == normalizedQuery || bundleIdentifier == normalizedQuery
-        }
-
-        if exactMatches.count == 1, let match = exactMatches.first {
-            return automationApplication(from: match)
-        }
-
-        let partialMatches = runningApplications.filter { application in
-            let name = (application.localizedName ?? "").lowercased()
-            let bundleIdentifier = (application.bundleIdentifier ?? "").lowercased()
-            return name.contains(normalizedQuery) || bundleIdentifier.contains(normalizedQuery)
-        }
-
-        let matches = exactMatches.isEmpty ? partialMatches : exactMatches
-
+        let matches = rankedRunningApplicationMatches(
+            query: query,
+            applications: runningApplications
+        )
         guard !matches.isEmpty else {
             throw RegionShotError.applicationNotFound("No running application matches `\(query)`.")
         }
 
-        guard matches.count == 1, let match = matches.first else {
+        if let match = uniqueBestRunningApplication(from: matches) {
+            return automationApplication(from: match)
+        }
+
+        let best = matches[0]
+        let equivalentMatches = matches.filter {
+            $0.score == best.score &&
+            $0.visibleWindowCount == best.visibleWindowCount &&
+            $0.activationRank == best.activationRank
+        }
+
+        guard equivalentMatches.count == 1, let match = equivalentMatches.first?.application else {
             let suggestions = matches
                 .prefix(5)
-                .map { application in
-                    let summary = automationApplication(from: application)
-                    return "\(summary.name) (pid \(summary.processID), \(summary.bundleIdentifier))"
+                .map { match in
+                    let summary = automationApplication(from: match.application)
+                    return "\(summary.name) (pid \(summary.processID), \(summary.bundleIdentifier), visible windows \(match.visibleWindowCount))"
                 }
                 .joined(separator: ", ")
             throw RegionShotError.ambiguousApplication("More than one running application matches `\(query)`: \(suggestions)")
@@ -1926,6 +2330,187 @@ private func automationApplication(from application: NSRunningApplication) -> Au
         bundleIdentifier: application.bundleIdentifier ?? "",
         processID: application.processIdentifier
     )
+}
+
+private func rankedRunningApplicationMatches(
+    query: String,
+    applications: [NSRunningApplication] = NSWorkspace.shared.runningApplications,
+    snapshots: [WindowSnapshot] = currentWindowSnapshots()
+) -> [RunningApplicationMatch] {
+    applications
+        .compactMap { application -> RunningApplicationMatch? in
+            guard let score = applicationSearchScore(
+                for: runningApplicationSearchTexts(for: application),
+                query: query
+            ) else {
+                return nil
+            }
+
+            let visibleWindowCount = visibleWindows(
+                for: application.processIdentifier,
+                snapshots: snapshots
+            ).count
+
+            return RunningApplicationMatch(
+                application: application,
+                score: score,
+                visibleWindowCount: visibleWindowCount,
+                activationRank: activationPolicyRank(application.activationPolicy)
+            )
+        }
+        .sorted(by: applicationMatchSort)
+}
+
+private func uniqueBestRunningApplication(
+    from matches: [RunningApplicationMatch]
+) -> NSRunningApplication? {
+    guard let first = matches.first else {
+        return nil
+    }
+
+    let equivalentMatches = matches.filter {
+        $0.score == first.score &&
+        $0.visibleWindowCount == first.visibleWindowCount &&
+        $0.activationRank == first.activationRank
+    }
+
+    return equivalentMatches.count == 1 ? first.application : nil
+}
+
+private func applicationMatchSort(
+    _ left: RunningApplicationMatch,
+    _ right: RunningApplicationMatch
+) -> Bool {
+    if left.score != right.score {
+        return left.score < right.score
+    }
+
+    if left.visibleWindowCount != right.visibleWindowCount {
+        return left.visibleWindowCount > right.visibleWindowCount
+    }
+
+    if left.activationRank != right.activationRank {
+        return left.activationRank < right.activationRank
+    }
+
+    let leftName = left.application.localizedName ?? ""
+    let rightName = right.application.localizedName ?? ""
+    if leftName != rightName {
+        return leftName.localizedCaseInsensitiveCompare(rightName) == .orderedAscending
+    }
+
+    return left.application.processIdentifier < right.application.processIdentifier
+}
+
+@available(macOS 14.0, *)
+private func shareableApplicationMatchSort(
+    _ left: ShareableApplicationMatch,
+    _ right: ShareableApplicationMatch
+) -> Bool {
+    if left.score != right.score {
+        return left.score < right.score
+    }
+
+    if left.visibleWindowCount != right.visibleWindowCount {
+        return left.visibleWindowCount > right.visibleWindowCount
+    }
+
+    if left.activationRank != right.activationRank {
+        return left.activationRank < right.activationRank
+    }
+
+    if left.application.applicationName != right.application.applicationName {
+        return left.application.applicationName.localizedCaseInsensitiveCompare(right.application.applicationName) == .orderedAscending
+    }
+
+    return left.application.processID < right.application.processID
+}
+
+private func runningApplicationSearchTexts(for application: NSRunningApplication) -> [String] {
+    [
+        application.localizedName,
+        application.bundleIdentifier,
+        application.bundleURL?.path,
+        application.executableURL?.path,
+    ].compactMap { $0 }
+}
+
+private func applicationSearchScore(
+    for texts: [String],
+    query: String
+) -> Int? {
+    guard let normalizedQuery = normalizedSelectorText(query) else {
+        return nil
+    }
+
+    var bestScore: Int?
+    for text in texts {
+        guard let normalizedText = normalizedSelectorText(text) else {
+            continue
+        }
+
+        if normalizedText == normalizedQuery {
+            bestScore = min(bestScore ?? Int.max, 0)
+        }
+
+        let lastPathComponent = (text as NSString).lastPathComponent
+        let pathStem = (lastPathComponent as NSString).deletingPathExtension
+        if normalizedSelectorText(lastPathComponent) == normalizedQuery ||
+            normalizedSelectorText(pathStem) == normalizedQuery {
+            bestScore = min(bestScore ?? Int.max, 1)
+        }
+
+        if normalizedText.contains(normalizedQuery) {
+            bestScore = min(bestScore ?? Int.max, 10)
+        }
+    }
+
+    return bestScore
+}
+
+private func runningApplicationEntry(
+    for application: NSRunningApplication,
+    index: Int,
+    visibleWindowCount: Int
+) -> RunningApplicationEntry {
+    RunningApplicationEntry(
+        index: index,
+        processID: application.processIdentifier,
+        name: application.localizedName ?? "<unknown>",
+        bundleIdentifier: application.bundleIdentifier ?? "",
+        activationPolicy: activationPolicyName(application.activationPolicy),
+        bundlePath: application.bundleURL?.path,
+        executablePath: application.executableURL?.path,
+        visibleWindowCount: visibleWindowCount
+    )
+}
+
+private func activationPolicyName(_ policy: NSApplication.ActivationPolicy) -> String {
+    switch policy {
+    case .regular:
+        return "regular"
+    case .accessory:
+        return "accessory"
+    case .prohibited:
+        return "prohibited"
+    @unknown default:
+        return "unknown"
+    }
+}
+
+private func activationPolicyRank(_ policy: NSApplication.ActivationPolicy?) -> Int {
+    switch policy {
+    case .regular?:
+        return 0
+    case .accessory?:
+        return 1
+    case .prohibited?:
+        return 2
+    case nil:
+        return 3
+    @unknown default:
+        return 3
+    }
 }
 
 private func accessibilityWindowSort(
@@ -2770,10 +3355,176 @@ private func formatFrame(_ frame: CGRect) -> String {
     "\(Int(frame.minX.rounded(.down))),\(Int(frame.minY.rounded(.down))) \(Int(frame.width.rounded(.down)))x\(Int(frame.height.rounded(.down)))"
 }
 
+private final class TimeoutRaceState<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completed = false
+    private var operationTask: Task<Void, Never>?
+    private var timeoutTask: Task<Void, Never>?
+
+    func setOperationTask(_ task: Task<Void, Never>) {
+        let shouldCancel: Bool
+        lock.lock()
+        if completed {
+            shouldCancel = true
+        } else {
+            operationTask = task
+            shouldCancel = false
+        }
+        lock.unlock()
+
+        if shouldCancel {
+            task.cancel()
+        }
+    }
+
+    func setTimeoutTask(_ task: Task<Void, Never>) {
+        let shouldCancel: Bool
+        lock.lock()
+        if completed {
+            shouldCancel = true
+        } else {
+            timeoutTask = task
+            shouldCancel = false
+        }
+        lock.unlock()
+
+        if shouldCancel {
+            task.cancel()
+        }
+    }
+
+    func complete(
+        _ result: Result<T, Error>,
+        continuation: CheckedContinuation<T, Error>
+    ) {
+        let operationTaskToCancel: Task<Void, Never>?
+        let timeoutTaskToCancel: Task<Void, Never>?
+
+        lock.lock()
+        if completed {
+            lock.unlock()
+            return
+        }
+
+        completed = true
+        operationTaskToCancel = operationTask
+        timeoutTaskToCancel = timeoutTask
+        lock.unlock()
+
+        operationTaskToCancel?.cancel()
+        timeoutTaskToCancel?.cancel()
+        continuation.resume(with: result)
+    }
+
+    func cancelAll() {
+        let operationTaskToCancel: Task<Void, Never>?
+        let timeoutTaskToCancel: Task<Void, Never>?
+
+        lock.lock()
+        completed = true
+        operationTaskToCancel = operationTask
+        timeoutTaskToCancel = timeoutTask
+        lock.unlock()
+
+        operationTaskToCancel?.cancel()
+        timeoutTaskToCancel?.cancel()
+    }
+}
+
+func withTimeout<T: Sendable>(
+    seconds: TimeInterval,
+    timeoutMessage: @escaping @Sendable () -> String,
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    let state = TimeoutRaceState<T>()
+    let nanoseconds = timeoutNanoseconds(seconds)
+
+    return try await withTaskCancellationHandler {
+        try await withCheckedThrowingContinuation { continuation in
+            let operationTask = Task {
+                do {
+                    let value = try await operation()
+                    state.complete(.success(value), continuation: continuation)
+                } catch {
+                    state.complete(.failure(error), continuation: continuation)
+                }
+            }
+            state.setOperationTask(operationTask)
+
+            let timeoutTask = Task {
+                do {
+                    try await Task.sleep(nanoseconds: nanoseconds)
+                } catch {
+                    return
+                }
+
+                state.complete(
+                    .failure(RegionShotError.operationTimedOut(timeoutMessage())),
+                    continuation: continuation
+                )
+            }
+            state.setTimeoutTask(timeoutTask)
+        }
+    } onCancel: {
+        state.cancelAll()
+    }
+}
+
+private func timeoutNanoseconds(_ seconds: TimeInterval) -> UInt64 {
+    let boundedSeconds = max(0.001, min(seconds, TimeInterval(UInt64.max) / 1_000_000_000))
+    return UInt64((boundedSeconds * 1_000_000_000).rounded(.up))
+}
+
+private func screenCaptureKitTimeoutMessage(
+    operation: String,
+    selector: ApplicationSelector,
+    timeout: TimeInterval
+) -> String {
+    let commandArgument = shellQuoted(selector.commandArgument)
+    return "ScreenCaptureKit did not \(operation) within \(formatSeconds(timeout)) for `\(selector.label)`. Try `regionshot --app \(commandArgument) --list-visible-windows` or `regionshot --app \(commandArgument) --visible-window --output FILE` for visible-pixel capture. If ScreenCaptureKit is only slow, retry with `--timeout SECONDS`."
+}
+
+private func formatSeconds(_ seconds: TimeInterval) -> String {
+    if seconds < 0.1 {
+        return String(format: "%.3fs", seconds)
+    }
+
+    let rounded = (seconds * 10).rounded() / 10
+    if rounded.rounded() == rounded {
+        return "\(Int(rounded))s"
+    }
+
+    return "\(rounded)s"
+}
+
+private func shellQuoted(_ value: String) -> String {
+    let safeCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./:-")
+    if value.unicodeScalars.allSatisfy({ safeCharacters.contains($0) }) {
+        return value
+    }
+
+    return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+}
+
 @available(macOS 14.0, *)
-private func loadShareableContent() async throws -> SCShareableContent {
+private func loadShareableContent(
+    timeout: TimeInterval,
+    selector: ApplicationSelector
+) async throws -> SCShareableContent {
     try ensureScreenCaptureAccess()
-    return try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
+    return try await withTimeout(
+        seconds: timeout,
+        timeoutMessage: {
+            screenCaptureKitTimeoutMessage(
+                operation: "return shareable app/window content",
+                selector: selector,
+                timeout: timeout
+            )
+        },
+        operation: {
+            try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
+        }
+    )
 }
 
 @available(macOS 14.0, *)
@@ -2871,12 +3622,18 @@ private func currentWindowSnapshots() -> [WindowSnapshot] {
             return nil
         }
 
+        let alpha = (entry[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
+        guard alpha > 0 else {
+            return nil
+        }
+
         return WindowSnapshot(
             windowID: CGWindowID(truncating: windowNumber),
             ownerPID: pid_t(truncating: ownerPID),
             title: normalizedTitle(entry[kCGWindowName as String] as? String),
             bounds: bounds,
-            layer: layer.intValue
+            layer: layer.intValue,
+            alpha: alpha
         )
     }
 }
@@ -2891,39 +3648,69 @@ private func resolveApplication(selector: ApplicationSelector, in applications: 
 
         return application
     case .name(let query):
-        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !normalizedQuery.isEmpty else {
+        guard normalizedSelectorText(query) != nil else {
             throw RegionShotError.invalidArguments("`--app` requires a non-empty name or process id.")
         }
 
-        let exactMatches = applications.filter {
-            $0.applicationName.lowercased() == normalizedQuery || $0.bundleIdentifier.lowercased() == normalizedQuery
-        }
-
-        if exactMatches.count == 1, let match = exactMatches.first {
-            return match
-        }
-
-        let partialMatches = applications.filter {
-            $0.applicationName.lowercased().contains(normalizedQuery) || $0.bundleIdentifier.lowercased().contains(normalizedQuery)
-        }
-
-        let matches = exactMatches.isEmpty ? partialMatches : exactMatches
-
+        let matches = rankedShareableApplicationMatches(
+            query: query,
+            applications: applications
+        )
         guard !matches.isEmpty else {
             throw RegionShotError.applicationNotFound("No shareable running application matches `\(query)`.")
         }
 
-        guard matches.count == 1, let match = matches.first else {
+        let best = matches[0]
+        let equivalentMatches = matches.filter {
+            $0.score == best.score &&
+            $0.visibleWindowCount == best.visibleWindowCount &&
+            $0.activationRank == best.activationRank
+        }
+
+        guard equivalentMatches.count == 1, let match = equivalentMatches.first?.application else {
             let suggestions = matches
                 .prefix(5)
-                .map { "\($0.applicationName) (pid \($0.processID), \($0.bundleIdentifier))" }
+                .map { "\($0.application.applicationName) (pid \($0.application.processID), \($0.application.bundleIdentifier), visible windows \($0.visibleWindowCount))" }
                 .joined(separator: ", ")
             throw RegionShotError.ambiguousApplication("More than one running application matches `\(query)`: \(suggestions)")
         }
 
         return match
     }
+}
+
+@available(macOS 14.0, *)
+private func rankedShareableApplicationMatches(
+    query: String,
+    applications: [SCRunningApplication],
+    snapshots: [WindowSnapshot] = currentWindowSnapshots()
+) -> [ShareableApplicationMatch] {
+    applications
+        .compactMap { application -> ShareableApplicationMatch? in
+            guard let score = applicationSearchScore(
+                for: [
+                    application.applicationName,
+                    application.bundleIdentifier,
+                ],
+                query: query
+            ) else {
+                return nil
+            }
+
+            let visibleWindowCount = visibleWindows(
+                for: application.processID,
+                snapshots: snapshots
+            ).count
+            let activationPolicy = NSRunningApplication(processIdentifier: application.processID)?.activationPolicy
+
+            return ShareableApplicationMatch(
+                application: application,
+                score: score,
+                visibleWindowCount: visibleWindowCount,
+                activationRank: activationPolicyRank(activationPolicy)
+            )
+        }
+        .sorted(by: shareableApplicationMatchSort)
 }
 
 @available(macOS 14.0, *)
@@ -2967,7 +3754,13 @@ private func selectWindow(from catalog: AppWindowCatalog, using selection: Windo
 }
 
 @available(macOS 14.0, *)
-private func captureWindow(_ window: CatalogWindow, crop: WindowCropRect?, outputURL: URL) async throws {
+private func captureWindow(
+    _ window: CatalogWindow,
+    crop: WindowCropRect?,
+    outputURL: URL,
+    timeout: TimeInterval,
+    selector: ApplicationSelector
+) async throws {
     let filter = SCContentFilter(desktopIndependentWindow: window.scWindow)
     let info = SCShareableContent.info(for: filter)
     let clearBackgroundColor = CGColor(red: 0, green: 0, blue: 0, alpha: 0)
@@ -2981,7 +3774,19 @@ private func captureWindow(_ window: CatalogWindow, crop: WindowCropRect?, outpu
     configuration.ignoreShadowsSingleWindow = true
     configuration.ignoreGlobalClipSingleWindow = true
 
-    let capturedImage = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+    let capturedImage = try await withTimeout(
+        seconds: timeout,
+        timeoutMessage: {
+            screenCaptureKitTimeoutMessage(
+                operation: "capture window [\(window.index)] \(displayTitle(window.title))",
+                selector: selector,
+                timeout: timeout
+            )
+        },
+        operation: {
+            try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+        }
+    )
 
     let finalImage: CGImage
     if let crop {
@@ -3000,7 +3805,9 @@ private func captureApplicationRegion(
     windows: [SCWindow],
     displays: [SCDisplay],
     region: CaptureRegion,
-    outputURL: URL
+    outputURL: URL,
+    timeout: TimeInterval,
+    selector: ApplicationSelector
 ) async throws {
     let regionRect = region.rect
     let plans = planDisplayCaptures(
@@ -3055,7 +3862,19 @@ private func captureApplicationRegion(
         configuration.backgroundColor = clearBackgroundColor
         configuration.ignoreShadowsDisplay = true
 
-        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+        let image = try await withTimeout(
+            seconds: timeout,
+            timeoutMessage: {
+                screenCaptureKitTimeoutMessage(
+                    operation: "capture app-filtered rectangle \(region.rectangleArgument) for `\(application.applicationName)`",
+                    selector: selector,
+                    timeout: timeout
+                )
+            },
+            operation: {
+                try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+            }
+        )
         let destinationRect = CGRect(
             x: (plan.intersectionRect.minX - regionRect.minX) * canvasScale,
             y: (plan.intersectionRect.minY - regionRect.minY) * canvasScale,

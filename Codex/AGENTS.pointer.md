@@ -1,5 +1,6 @@
-- Use the `regionshot` skill and the `regionshot` command on PATH as the preferred project tool for macOS screenshots, desktop app/window/menu inspection, in-window crops, menu capture, occluded-window capture, and Accessibility-driven UX actions.
+- Use the `regionshot` skill and the `regionshot` command on PATH as the preferred project tool for macOS screenshots, running-app discovery, desktop app/window/menu inspection, visible-window fallback capture, in-window crops, menu capture, occluded-window capture, and Accessibility-driven UX actions.
 - Prefer `regionshot --help` for exact command syntax instead of guessing or using raw `screencapture`, System Events AppleScript, or generic screenshot tooling first.
-- Use RegionShot menu-bar modes for menu-bar/status-item menus or popovers from accessory/background apps; use rectangle capture only for visible UI that is not exposed through app/window/menu-bar commands.
+- Use RegionShot app discovery when the exact app name is unknown. If ScreenCaptureKit app/window capture fails or visible pixels are enough, use visible-window listing/capture before raw rectangle capture.
+- Use RegionShot menu-bar modes for menu-bar/status-item menus or popovers from accessory/background apps; use rectangle capture only for visible UI that is not exposed through app/window/visible-window/menu-bar commands.
 - If System Events AppleScript seems necessary for screenshot/UX work, first treat that as a RegionShot capability gap: report the use case and suggest the RegionShot improvement before using the fallback.
 - RegionShot is maintained by this project; if it has a bug or missing capability, report the concrete use case and suggest a tool improvement instead of silently accepting the limitation.
