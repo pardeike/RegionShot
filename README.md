@@ -16,6 +16,9 @@ regionshot --app "System Settings" --frontmost-window
 regionshot --app "System Settings" --frontmost-window --window-crop 40,80,300,160
 regionshot --app "System Settings" --window-index 0
 regionshot --app "System Settings" --window-name "<window title>"
+regionshot --app "Drafty" --list-menu-bar-items
+regionshot --app "Drafty" --capture-menu
+regionshot --app "Drafty" --menu-bar-index 0 --capture-menu
 regionshot --app "System Settings" --list-elements
 regionshot --app "System Settings" --press --role AXButton --title Done
 regionshot --app "System Settings" --press-at 14,14
@@ -40,7 +43,7 @@ If `--app` is provided without rectangle coordinates or a specific window flag, 
 
 `--output` only applies to capture modes. If you pass `--app` without rectangle coordinates or a window selector, no file is written.
 
-`--app` modes target normal app windows. Accessory/background apps such as menu-bar utilities may resolve as running applications while exposing no capturable or accessibility windows; their status-menu items are not app windows. For visible menu-bar UI, use rectangle coordinates or open a normal app window first.
+App/window modes target normal app windows. Accessory/background apps such as menu-bar utilities may resolve as running applications while exposing no capturable or accessibility windows; use menu-bar modes for their status items and menus.
 
 Window indices are frontmost-first within the selected app.
 
@@ -53,6 +56,8 @@ In specific-window mode, `regionshot` can capture:
 - the app window whose title matches via `--window-name`
 
 `--window-crop x,y,width,height` works with those specific-window modes and is relative to the selected window's top-left corner in points. This is useful for element-level screenshots inside a known window.
+
+Menu-bar modes inspect and operate on generic Accessibility menu-bar items exposed by the selected app. `--list-menu-bar-items` prints JSON entries for status items and app menu-bar items. `--capture-menu` opens the selected menu-bar item, captures the visible menu or menu-like popover rectangle, prints the PNG path, and closes it. If you omit `--menu-bar-index` or `--menu-bar-item`, RegionShot selects the single status-item entry when exactly one is available; otherwise it fails with candidate suggestions.
 
 `--list-elements` prints a bounded JSON accessibility tree for the selected window. If you omit a window selector, it defaults to the app's focused window, then main window, then first accessibility window.
 

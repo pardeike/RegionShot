@@ -27,6 +27,9 @@ struct RegionShot {
             case .inspectAccessibility(let command):
                 let json = try await inspectAccessibility(using: command)
                 print(json)
+            case .menuBar(let command):
+                let result = try await handleMenuBar(using: command)
+                print(result)
             }
         } catch let error as RegionShotError {
             writeStandardError("error: \(error.localizedDescription)\n")
@@ -44,6 +47,7 @@ private enum CommandBehavior: Sendable {
     case capture(CaptureCommand)
     case listWindows(ListWindowsCommand)
     case inspectAccessibility(AccessibilityCommand)
+    case menuBar(MenuBarCommand)
 }
 
 private struct CaptureCommand: Sendable {
@@ -62,6 +66,13 @@ private struct AccessibilityCommand: Sendable {
     let applicationSelector: ApplicationSelector
     let windowSelection: WindowSelection?
     let mode: AccessibilityMode
+}
+
+private struct MenuBarCommand: Sendable {
+    let applicationSelector: ApplicationSelector
+    let selection: MenuBarSelection?
+    let mode: MenuBarMode
+    let outputURL: URL?
 }
 
 private struct AccessibilitySelector: Sendable {
@@ -150,6 +161,17 @@ private enum AccessibilityMode: Sendable {
     case pressElement(AccessibilitySelector)
 }
 
+private enum MenuBarMode: Sendable {
+    case listItems
+    case pressItem
+    case captureMenu
+}
+
+private enum MenuBarSelection: Sendable {
+    case index(Int)
+    case name(String)
+}
+
 private struct ParsedArguments {
     let region: CaptureRegion?
     let values: [String: String]
@@ -189,12 +211,31 @@ private struct AccessibilityWindowCatalog {
     let windows: [AccessibilityCatalogWindow]
 }
 
+private struct MenuBarItemCatalog {
+    let application: AutomationApplication
+    let items: [MenuBarCatalogItem]
+}
+
 private struct AccessibilityCatalogWindow {
     let index: Int
     let title: String?
     let frame: CGRect
     let isFocused: Bool
     let isMain: Bool
+    let element: AXUIElement
+}
+
+private struct MenuBarCatalogItem {
+    let index: Int
+    let source: String
+    let role: String?
+    let subrole: String?
+    let title: String?
+    let description: String?
+    let identifier: String?
+    let frame: CGRect?
+    let actions: [String]
+    let childCount: Int
     let element: AXUIElement
 }
 
@@ -308,6 +349,45 @@ private struct AccessibilityElementResponse: Encodable {
     let children: [AccessibilityElementResponse]?
 }
 
+private struct MenuBarListResponse: Encodable {
+    let application: WindowListApplication
+    let items: [MenuBarItemEntry]
+}
+
+private struct MenuBarPressResponse: Encodable {
+    let application: WindowListApplication
+    let item: MenuBarItemEntry
+    let action: String
+    let menu: AccessibilityElementResponse?
+}
+
+private struct MenuBarItemEntry: Encodable {
+    let index: Int
+    let source: String
+    let role: String?
+    let subrole: String?
+    let title: String?
+    let description: String?
+    let identifier: String?
+    let frame: JSONRect?
+    let actions: [String]
+    let childCount: Int
+}
+
+private enum MenuBarSurface {
+    case menu(AXUIElement)
+    case window(CGRect)
+
+    var frame: CGRect? {
+        switch self {
+        case .menu(let element):
+            return copyAXFrame(from: element)
+        case .window(let rect):
+            return rect
+        }
+    }
+}
+
 private struct AccessibilityElementCandidate {
     let element: AXUIElement
     let depth: Int
@@ -391,6 +471,12 @@ Forms:
   regionshot --app APP --frontmost-window [--window-crop X,Y,W,H] [--output FILE]
   regionshot --app APP --window-index N [--window-crop X,Y,W,H] [--output FILE]
   regionshot --app APP --window-name TITLE [--window-crop X,Y,W,H] [--output FILE]
+  regionshot --app APP --list-menu-bar-items
+  regionshot --app APP --capture-menu [--output FILE]
+  regionshot --app APP --menu-bar-index N --press
+  regionshot --app APP --menu-bar-index N --capture-menu [--output FILE]
+  regionshot --app APP --menu-bar-item TEXT --press
+  regionshot --app APP --menu-bar-item TEXT --capture-menu [--output FILE]
   regionshot --app APP --list-elements
   regionshot --app APP --press --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
   regionshot --app APP --press-at X,Y
@@ -412,6 +498,8 @@ Rules:
   `--app` accepts app name, bundle id, or pid
   `--app` alone == inspect mode == same as `--list-windows`
   window list JSON includes frontmost-first indices, titles, and bounds
+  menu-bar item list JSON includes status-item/app-menu indices, roles, actions, and bounds
+  `--capture-menu` opens the selected menu-bar item, captures the visible menu or popover, and closes it
   `--window-crop` is relative to the selected window's top-left in points
   prefer selector-based `--press` (alias: `--press-element`); use `--press-at` as fallback
   accessibility modes default to the app's focused window, then main window, then first window
@@ -423,7 +511,7 @@ Rules:
   accessibility inspection and actions require Accessibility permission
   rectangle mode without `--app` forwards to `screencapture -R`
   rectangle mode with `--app` includes only that app, even if covered by other windows
-  `--app` modes target app windows, not menu-bar/status-item UI from accessory/background apps
+  app/window modes target app windows; use menu-bar modes for status-item UI from accessory/background apps
 """
 
 private let codexSkillName = "regionshot"
@@ -730,8 +818,13 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
     let windowSelection = try parseWindowSelection(parsed)
     let windowCrop = try parseWindowCrop(parsed.values["--window-crop"])
     let wantsWindowList = parsed.flags.contains("--list-windows")
+    let wantsMenuBarList = parsed.flags.contains("--list-menu-bar-items")
+    let wantsCaptureMenu = parsed.flags.contains("--capture-menu")
+    let menuBarSelection = try parseMenuBarSelection(parsed)
     let wantsElementList = parsed.flags.contains("--list-elements")
-    let wantsPressElement = parsed.flags.contains("--press") || parsed.flags.contains("--press-element")
+    let wantsPress = parsed.flags.contains("--press") || parsed.flags.contains("--press-element")
+    let wantsMenuBarPress = wantsPress && menuBarSelection != nil
+    let wantsAccessibilityPress = wantsPress && !wantsMenuBarPress
     let elementPoint = try parseWindowPoint(parsed.values["--element-at"], flag: "--element-at")
     let pressPoint = try parseWindowPoint(parsed.values["--press-at"], flag: "--press-at")
     let selector = parseAccessibilitySelector(from: parsed.values)
@@ -740,7 +833,7 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
     let accessibilityModeCount = [
         wantsElementList ? 1 : 0,
         elementPoint != nil ? 1 : 0,
-        wantsPressElement ? 1 : 0,
+        wantsAccessibilityPress ? 1 : 0,
         pressPoint != nil ? 1 : 0,
     ].reduce(0, +)
 
@@ -748,17 +841,38 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
         throw RegionShotError.invalidArguments("Choose only one of `--list-elements`, `--element-at`, `--press`/`--press-element`, or `--press-at`.")
     }
 
+    let menuBarModeCount = [
+        wantsMenuBarList ? 1 : 0,
+        wantsMenuBarPress ? 1 : 0,
+        wantsCaptureMenu ? 1 : 0,
+    ].reduce(0, +)
+
+    if menuBarModeCount > 1 {
+        throw RegionShotError.invalidArguments("Choose only one of `--list-menu-bar-items`, menu-bar `--press`, or `--capture-menu`.")
+    }
+
     let accessibilityMode: AccessibilityMode?
     if wantsElementList {
         accessibilityMode = .listElements
     } else if let elementPoint {
         accessibilityMode = .elementAt(elementPoint)
-    } else if wantsPressElement {
+    } else if wantsAccessibilityPress {
         accessibilityMode = .pressElement(selector)
     } else if let pressPoint {
         accessibilityMode = .pressAt(pressPoint)
     } else {
         accessibilityMode = nil
+    }
+
+    let menuBarMode: MenuBarMode?
+    if wantsMenuBarList {
+        menuBarMode = .listItems
+    } else if wantsMenuBarPress {
+        menuBarMode = .pressItem
+    } else if wantsCaptureMenu {
+        menuBarMode = .captureMenu
+    } else {
+        menuBarMode = nil
     }
 
     if windowSelection != nil, applicationSelector == nil {
@@ -773,6 +887,10 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
         throw RegionShotError.invalidArguments("`--list-windows` requires `--app <name-or-pid>`.")
     }
 
+    if menuBarMode != nil, applicationSelector == nil {
+        throw RegionShotError.invalidArguments("Menu-bar inspection and actions require `--app <name-or-pid>`.")
+    }
+
     if accessibilityMode != nil, applicationSelector == nil {
         throw RegionShotError.invalidArguments("Accessibility inspection and actions require `--app <name-or-pid>`.")
     }
@@ -783,6 +901,10 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
 
     if wantsWindowList, accessibilityMode != nil {
         throw RegionShotError.invalidArguments("`--list-windows` cannot be combined with accessibility inspection or action flags.")
+    }
+
+    if wantsWindowList, menuBarMode != nil {
+        throw RegionShotError.invalidArguments("`--list-windows` cannot be combined with menu-bar inspection or action flags.")
     }
 
     if wantsWindowList, windowCrop != nil {
@@ -797,6 +919,42 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
         throw RegionShotError.invalidArguments("`--list-windows` prints JSON to stdout and does not use `--output`.")
     }
 
+    if menuBarMode != nil, parsed.region != nil {
+        throw RegionShotError.invalidArguments("Menu-bar inspection and actions cannot be combined with rectangle coordinates.")
+    }
+
+    if menuBarMode != nil, windowSelection != nil {
+        throw RegionShotError.invalidArguments("Menu-bar inspection and actions cannot be combined with `--frontmost-window`, `--window-index`, or `--window-name`.")
+    }
+
+    if menuBarMode != nil, windowCrop != nil {
+        throw RegionShotError.invalidArguments("Menu-bar inspection and actions cannot be combined with `--window-crop`.")
+    }
+
+    if menuBarMode != nil, accessibilityMode != nil {
+        throw RegionShotError.invalidArguments("Menu-bar inspection and actions cannot be combined with window Accessibility inspection or action flags.")
+    }
+
+    if wantsMenuBarList, menuBarSelection != nil {
+        throw RegionShotError.invalidArguments("`--list-menu-bar-items` cannot be combined with `--menu-bar-index` or `--menu-bar-item`.")
+    }
+
+    if wantsMenuBarList, outputPath != nil {
+        throw RegionShotError.invalidArguments("`--list-menu-bar-items` prints JSON to stdout and does not use `--output`.")
+    }
+
+    if wantsMenuBarPress, outputPath != nil {
+        throw RegionShotError.invalidArguments("Menu-bar `--press` prints JSON to stdout and does not use `--output`.")
+    }
+
+    if wantsMenuBarPress, !selector.isEmpty {
+        throw RegionShotError.invalidArguments("Menu-bar `--press` cannot be combined with selector fields. Use `--menu-bar-index` or `--menu-bar-item` to select a menu-bar item.")
+    }
+
+    if menuBarSelection != nil, menuBarMode == nil {
+        throw RegionShotError.invalidArguments("`--menu-bar-index` and `--menu-bar-item` require menu-bar `--press` or `--capture-menu`.")
+    }
+
     if accessibilityMode != nil, parsed.region != nil {
         throw RegionShotError.invalidArguments("Accessibility inspection and actions cannot be combined with rectangle coordinates.")
     }
@@ -809,11 +967,11 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
         throw RegionShotError.invalidArguments("Accessibility inspection and actions print JSON to stdout and do not use `--output`.")
     }
 
-    if wantsPressElement, selector.isEmpty {
+    if wantsAccessibilityPress, selector.isEmpty {
         throw RegionShotError.invalidArguments("`--press` (alias: `--press-element`) requires at least one selector field: `--role`, `--subrole`, `--title`, `--identifier`, or `--description`.")
     }
 
-    if !wantsPressElement, !selector.isEmpty {
+    if !wantsAccessibilityPress, !selector.isEmpty {
         throw RegionShotError.invalidArguments("Selector fields require `--press` or `--press-element`.")
     }
 
@@ -831,6 +989,17 @@ private func parse(arguments: [String]) throws -> CommandBehavior {
 
     if windowCrop != nil, windowSelection == nil {
         throw RegionShotError.invalidArguments("`--window-crop` requires one of `--frontmost-window`, `--window-index`, or `--window-name`.")
+    }
+
+    if let menuBarMode {
+        return .menuBar(
+            MenuBarCommand(
+                applicationSelector: applicationSelector!,
+                selection: menuBarSelection,
+                mode: menuBarMode,
+                outputURL: wantsCaptureMenu ? try outputURL(from: outputPath) : nil
+            )
+        )
     }
 
     if applicationSelector != nil, parsed.region == nil, windowSelection == nil, outputPath != nil {
@@ -919,10 +1088,10 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         let argument = arguments[index]
 
         switch argument {
-        case "--help", "-h", "--list-windows", "--frontmost-window", "--list-elements", "--press", "--press-element":
+        case "--help", "-h", "--list-windows", "--frontmost-window", "--list-elements", "--list-menu-bar-items", "--press", "--press-element", "--capture-menu":
             flags.insert(argument)
             index += 1
-        case "--x", "--y", "--width", "--height", "--output", "--app", "--window-index", "--window-name", "--window-crop", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description":
+        case "--x", "--y", "--width", "--height", "--output", "--app", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description":
             let valueIndex = index + 1
             guard valueIndex < arguments.count else {
                 throw RegionShotError.invalidArguments("Missing value for \(argument).")
@@ -986,6 +1155,32 @@ private func parseWindowSelection(_ parsed: ParsedArguments) throws -> WindowSel
 
     guard selections.count <= 1 else {
         throw RegionShotError.invalidArguments("Choose only one of `--frontmost-window`, `--window-index`, or `--window-name`.")
+    }
+
+    return selections.first
+}
+
+private func parseMenuBarSelection(_ parsed: ParsedArguments) throws -> MenuBarSelection? {
+    var selections: [MenuBarSelection] = []
+
+    if let rawIndex = parsed.values["--menu-bar-index"] {
+        let index = try parseInteger(rawIndex, flag: "--menu-bar-index")
+        guard index >= 0 else {
+            throw RegionShotError.invalidArguments("`--menu-bar-index` must be zero or greater.")
+        }
+        selections.append(.index(index))
+    }
+
+    if let itemName = parsed.values["--menu-bar-item"] {
+        let trimmed = itemName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw RegionShotError.invalidArguments("`--menu-bar-item` requires a non-empty title, description, or identifier.")
+        }
+        selections.append(.name(trimmed))
+    }
+
+    guard selections.count <= 1 else {
+        throw RegionShotError.invalidArguments("Choose only one of `--menu-bar-index` or `--menu-bar-item`.")
     }
 
     return selections.first
@@ -1303,6 +1498,44 @@ private func inspectAccessibility(using command: AccessibilityCommand) async thr
     }
 }
 
+private func handleMenuBar(using command: MenuBarCommand) async throws -> String {
+    try ensureAccessibilityAccess(prompt: true)
+
+    let catalog = try buildMenuBarItemCatalog(selector: command.applicationSelector)
+
+    switch command.mode {
+    case .listItems:
+        let response = MenuBarListResponse(
+            application: windowListApplication(for: catalog.application),
+            items: catalog.items.map(menuBarItemEntry(for:))
+        )
+        return try encodeJSON(response)
+    case .pressItem:
+        let item = try selectMenuBarItem(from: catalog, using: command.selection)
+        let menu = try activateMenuBarItem(item, requireVisibleMenu: false)
+        let response = MenuBarPressResponse(
+            application: windowListApplication(for: catalog.application),
+            item: menuBarItemEntry(for: item),
+            action: kAXPressAction as String,
+            menu: menu.map { accessibilityElementResponse(for: $0, depthRemaining: 2) }
+        )
+        return try encodeJSON(response)
+    case .captureMenu:
+        let item = try selectMenuBarItem(from: catalog, using: command.selection)
+        let surface = try openMenuBarSurface(for: item, application: catalog.application)
+        defer {
+            closeMenuBarSurface(surface, item: item)
+        }
+
+        let outputURL = command.outputURL ?? temporaryOutputURL()
+        let directoryURL = outputURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        let region = try captureRegion(forMenuFrame: surface.frame, item: item)
+        try captureScreenRegion(region: region, outputURL: outputURL)
+        return outputURL.path
+    }
+}
+
 private func encodeJSON<T: Encodable>(_ value: T) throws -> String {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -1354,7 +1587,7 @@ private func windowlessApplicationMessage(
         policyNote = ""
     }
 
-    return "`\(name)` was found (pid \(processID)\(bundleSummary)), but macOS exposed no \(windowKind) windows for it.\(policyNote) \(modeDescription) Use rectangle capture (`regionshot X Y WIDTH HEIGHT`) for menu-bar/status-item UI, or open a normal app window first."
+    return "`\(name)` was found (pid \(processID)\(bundleSummary)), but macOS exposed no \(windowKind) windows for it.\(policyNote) \(modeDescription) Use `--list-menu-bar-items` and `--capture-menu` for menu-bar/status-item UI, use rectangle capture (`regionshot X Y WIDTH HEIGHT`) for raw visible pixels, or open a normal app window first."
 }
 
 private func windowListEntry(for window: CatalogWindow) -> WindowListEntry {
@@ -1387,6 +1620,191 @@ private func accessibilitySelectorResponse(for selector: AccessibilitySelector) 
         identifier: selector.identifier,
         description: selector.elementDescription
     )
+}
+
+private func menuBarItemEntry(for item: MenuBarCatalogItem) -> MenuBarItemEntry {
+    MenuBarItemEntry(
+        index: item.index,
+        source: item.source,
+        role: item.role,
+        subrole: item.subrole,
+        title: item.title,
+        description: item.description,
+        identifier: item.identifier,
+        frame: item.frame.map(JSONRect.init),
+        actions: item.actions,
+        childCount: item.childCount
+    )
+}
+
+private func buildMenuBarItemCatalog(selector: ApplicationSelector) throws -> MenuBarItemCatalog {
+    let runningApplication = try resolveAutomationApplication(selector: selector)
+    let applicationElement = AXUIElementCreateApplication(runningApplication.processID)
+
+    var items: [MenuBarCatalogItem] = []
+    appendMenuBarItems(
+        from: copyAXElement(from: applicationElement, attribute: "AXExtrasMenuBar" as CFString),
+        source: "extras",
+        to: &items
+    )
+    appendMenuBarItems(
+        from: copyAXElement(from: applicationElement, attribute: kAXMenuBarAttribute as CFString),
+        source: "menuBar",
+        to: &items
+    )
+
+    guard !items.isEmpty else {
+        throw RegionShotError.windowNotFound("No menu-bar items are currently available for `\(runningApplication.name)`.")
+    }
+
+    return MenuBarItemCatalog(
+        application: runningApplication,
+        items: items.enumerated().map { offset, item in
+            MenuBarCatalogItem(
+                index: offset,
+                source: item.source,
+                role: item.role,
+                subrole: item.subrole,
+                title: item.title,
+                description: item.description,
+                identifier: item.identifier,
+                frame: item.frame,
+                actions: item.actions,
+                childCount: item.childCount,
+                element: item.element
+            )
+        }
+    )
+}
+
+private func appendMenuBarItems(
+    from menuBar: AXUIElement?,
+    source: String,
+    to items: inout [MenuBarCatalogItem]
+) {
+    guard let menuBar else {
+        return
+    }
+
+    for element in copyAXElements(from: menuBar, attribute: kAXChildrenAttribute as CFString) {
+        guard let frame = copyAXFrame(from: element), !frame.isEmpty else {
+            continue
+        }
+
+        let children = copyAXElements(from: element, attribute: kAXChildrenAttribute as CFString)
+        items.append(
+            MenuBarCatalogItem(
+                index: items.count,
+                source: source,
+                role: copyAXString(from: element, attribute: kAXRoleAttribute as CFString),
+                subrole: copyAXString(from: element, attribute: kAXSubroleAttribute as CFString),
+                title: normalizedTitle(copyAXString(from: element, attribute: kAXTitleAttribute as CFString)),
+                description: normalizedTitle(copyAXString(from: element, attribute: kAXDescriptionAttribute as CFString)),
+                identifier: normalizedTitle(copyAXString(from: element, attribute: kAXIdentifierAttribute as CFString)),
+                frame: frame,
+                actions: copyAXActions(from: element),
+                childCount: children.count,
+                element: element
+            )
+        )
+    }
+}
+
+private func selectMenuBarItem(
+    from catalog: MenuBarItemCatalog,
+    using selection: MenuBarSelection?
+) throws -> MenuBarCatalogItem {
+    guard let selection else {
+        let extras = catalog.items.filter { $0.source == "extras" }
+        if extras.count == 1, let item = extras.first {
+            return item
+        }
+
+        if catalog.items.count == 1, let item = catalog.items.first {
+            return item
+        }
+
+        let suggestions = catalog.items
+            .prefix(6)
+            .map(formatMenuBarCandidate)
+            .joined(separator: ", ")
+        throw RegionShotError.ambiguousWindow("More than one menu-bar item is available for `\(catalog.application.name)`. Choose `--menu-bar-index` or `--menu-bar-item`: \(suggestions)")
+    }
+
+    switch selection {
+    case .index(let index):
+        guard let item = catalog.items.first(where: { $0.index == index }) else {
+            throw RegionShotError.windowNotFound("No menu-bar item at index \(index) for `\(catalog.application.name)`. Run `regionshot --app \"\(catalog.application.name)\" --list-menu-bar-items` to inspect available items.")
+        }
+        return item
+    case .name(let query):
+        let exactMatches = catalog.items.filter { item in
+            menuBarSearchTexts(for: item, application: catalog.application).contains { text in
+                normalizedSelectorText(text) == normalizedSelectorText(query)
+            }
+        }
+
+        if exactMatches.count == 1, let match = exactMatches.first {
+            return match
+        }
+
+        let partialMatches = catalog.items.filter { item in
+            menuBarSearchTexts(for: item, application: catalog.application).contains { text in
+                guard
+                    let normalizedText = normalizedSelectorText(text),
+                    let normalizedQuery = normalizedSelectorText(query)
+                else {
+                    return false
+                }
+                return normalizedText.contains(normalizedQuery)
+            }
+        }
+        let matches = exactMatches.isEmpty ? partialMatches : exactMatches
+
+        guard !matches.isEmpty else {
+            throw RegionShotError.windowNotFound("No menu-bar item matching `\(query)` was found for `\(catalog.application.name)`. Run `regionshot --app \"\(catalog.application.name)\" --list-menu-bar-items` to inspect available items.")
+        }
+
+        guard matches.count == 1, let match = matches.first else {
+            let suggestions = matches
+                .prefix(6)
+                .map(formatMenuBarCandidate)
+                .joined(separator: ", ")
+            throw RegionShotError.ambiguousWindow("More than one menu-bar item matches `\(query)`: \(suggestions)")
+        }
+
+        return match
+    }
+}
+
+private func menuBarSearchTexts(
+    for item: MenuBarCatalogItem,
+    application: AutomationApplication
+) -> [String] {
+    var texts = [
+        item.title,
+        item.description,
+        item.identifier,
+    ].compactMap { $0 }
+
+    if item.source == "extras", texts.isEmpty {
+        texts.append(application.name)
+        if !application.bundleIdentifier.isEmpty {
+            texts.append(application.bundleIdentifier)
+        }
+    }
+
+    return texts
+}
+
+private func formatMenuBarCandidate(_ item: MenuBarCatalogItem) -> String {
+    let role = item.role ?? "?"
+    let subrole = item.subrole.map { "/\($0)" } ?? ""
+    let title = item.title.map { " title=\($0)" } ?? ""
+    let description = item.description.map { " description=\($0)" } ?? ""
+    let identifier = item.identifier.map { " id=\($0)" } ?? ""
+    let frame = item.frame.map { " @ \(formatFrame($0))" } ?? ""
+    return "[\(item.index)] \(item.source) \(role)\(subrole)\(title)\(description)\(identifier)\(frame)"
 }
 
 private func buildAccessibilityWindowCatalog(selector: ApplicationSelector) throws -> AccessibilityWindowCatalog {
@@ -1874,6 +2292,238 @@ private func refineCandidates(
         }
         return value.contains(query)
     }
+}
+
+private func openMenuBarSurface(
+    for item: MenuBarCatalogItem,
+    application: AutomationApplication
+) throws -> MenuBarSurface {
+    if let existingMenu = visibleMenu(for: item.element) {
+        cancelMenu(existingMenu)
+        waitForMenuToClose(existingMenu)
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+
+    guard supportsAXAction(item.element, action: kAXPressAction as String) else {
+        throw RegionShotError.accessibilityQueryFailed("Menu-bar item \(formatMenuBarCandidate(item)) does not support `AXPress`.")
+    }
+
+    let excludedWindowIDs = Set(
+        currentWindowSnapshots()
+            .filter { $0.ownerPID == application.processID }
+            .map(\.windowID)
+    )
+
+    var error = AXUIElementPerformAction(item.element, kAXPressAction as CFString)
+    if let surface = waitForVisibleMenuBarSurface(
+        for: item,
+        application: application,
+        excludingWindowIDs: excludedWindowIDs
+    ) {
+        return surface
+    }
+
+    Thread.sleep(forTimeInterval: 0.1)
+    error = AXUIElementPerformAction(item.element, kAXPressAction as CFString)
+    if let surface = waitForVisibleMenuBarSurface(
+        for: item,
+        application: application,
+        excludingWindowIDs: []
+    ) {
+        return surface
+    }
+
+    guard error == .success else {
+        throw RegionShotError.accessibilityQueryFailed("Failed to perform `AXPress` on \(formatMenuBarCandidate(item)) (AX error \(error.rawValue)).")
+    }
+
+    throw RegionShotError.accessibilityQueryFailed("No visible menu or menu-like popover appeared after pressing \(formatMenuBarCandidate(item)).")
+}
+
+private func activateMenuBarItem(
+    _ item: MenuBarCatalogItem,
+    requireVisibleMenu: Bool
+) throws -> AXUIElement? {
+    guard supportsAXAction(item.element, action: kAXPressAction as String) else {
+        throw RegionShotError.accessibilityQueryFailed("Menu-bar item \(formatMenuBarCandidate(item)) does not support `AXPress`.")
+    }
+
+    var error = AXUIElementPerformAction(item.element, kAXPressAction as CFString)
+    var visibleMenu = waitForVisibleMenu(for: item.element)
+
+    if requireVisibleMenu, visibleMenu == nil {
+        Thread.sleep(forTimeInterval: 0.1)
+        error = AXUIElementPerformAction(item.element, kAXPressAction as CFString)
+        visibleMenu = waitForVisibleMenu(for: item.element)
+    }
+
+    if requireVisibleMenu, visibleMenu == nil {
+        throw RegionShotError.accessibilityQueryFailed("No visible menu appeared after pressing \(formatMenuBarCandidate(item)).")
+    }
+
+    guard error == .success || visibleMenu != nil else {
+        throw RegionShotError.accessibilityQueryFailed("Failed to perform `AXPress` on \(formatMenuBarCandidate(item)) (AX error \(error.rawValue)).")
+    }
+
+    return visibleMenu
+}
+
+private func waitForVisibleMenu(
+    for item: AXUIElement,
+    timeout: TimeInterval = 1.5
+) -> AXUIElement? {
+    let deadline = Date().addingTimeInterval(timeout)
+
+    repeat {
+        if let menu = visibleMenu(for: item) {
+            return menu
+        }
+        Thread.sleep(forTimeInterval: 0.05)
+    } while Date() < deadline
+
+    return nil
+}
+
+private func waitForVisibleMenuBarSurface(
+    for item: MenuBarCatalogItem,
+    application: AutomationApplication,
+    excludingWindowIDs: Set<CGWindowID>,
+    timeout: TimeInterval = 1.5
+) -> MenuBarSurface? {
+    let deadline = Date().addingTimeInterval(timeout)
+
+    repeat {
+        if let menu = visibleMenu(for: item.element) {
+            return .menu(menu)
+        }
+
+        if let windowFrame = visibleMenuBarSurfaceWindowFrame(
+            for: application,
+            near: item,
+            excludingWindowIDs: excludingWindowIDs
+        ) {
+            return .window(windowFrame)
+        }
+
+        Thread.sleep(forTimeInterval: 0.05)
+    } while Date() < deadline
+
+    return nil
+}
+
+private func visibleMenuBarSurfaceWindowFrame(
+    for application: AutomationApplication,
+    near item: MenuBarCatalogItem,
+    excludingWindowIDs: Set<CGWindowID>
+) -> CGRect? {
+    guard let itemFrame = item.frame else {
+        return nil
+    }
+
+    return currentWindowSnapshots()
+        .filter { snapshot in
+            snapshot.ownerPID == application.processID &&
+            snapshot.layer > 0 &&
+            !excludingWindowIDs.contains(snapshot.windowID) &&
+            snapshot.bounds.width >= 20 &&
+            snapshot.bounds.height >= 20 &&
+            isLikelyMenuBarSurfaceWindow(snapshot.bounds, near: itemFrame)
+        }
+        .sorted { left, right in
+            let leftDistance = abs(left.bounds.minY - itemFrame.maxY)
+            let rightDistance = abs(right.bounds.minY - itemFrame.maxY)
+            if leftDistance != rightDistance {
+                return leftDistance < rightDistance
+            }
+
+            let leftArea = left.bounds.width * left.bounds.height
+            let rightArea = right.bounds.width * right.bounds.height
+            return leftArea < rightArea
+        }
+        .first?
+        .bounds
+}
+
+private func isLikelyMenuBarSurfaceWindow(_ windowFrame: CGRect, near itemFrame: CGRect) -> Bool {
+    let horizontalMargin: CGFloat = 80
+    let itemMidX = itemFrame.midX
+    let horizontallyRelated =
+        itemMidX >= windowFrame.minX - horizontalMargin &&
+        itemMidX <= windowFrame.maxX + horizontalMargin
+
+    let belowMenuBar =
+        windowFrame.minY >= itemFrame.maxY - 8 &&
+        windowFrame.minY <= itemFrame.maxY + 220
+
+    let aboveMenuBar =
+        windowFrame.maxY <= itemFrame.minY + 8 &&
+        windowFrame.maxY >= itemFrame.minY - 220
+
+    return horizontallyRelated && (belowMenuBar || aboveMenuBar)
+}
+
+private func waitForMenuToClose(
+    _ menu: AXUIElement,
+    timeout: TimeInterval = 0.5
+) {
+    let deadline = Date().addingTimeInterval(timeout)
+
+    repeat {
+        if let frame = copyAXFrame(from: menu), frame.isEmpty {
+            return
+        }
+        Thread.sleep(forTimeInterval: 0.05)
+    } while Date() < deadline
+}
+
+private func visibleMenu(for item: AXUIElement) -> AXUIElement? {
+    copyAXElements(from: item, attribute: kAXChildrenAttribute as CFString)
+        .first { element in
+            guard copyAXString(from: element, attribute: kAXRoleAttribute as CFString) == (kAXMenuRole as String) else {
+                return false
+            }
+            guard let frame = copyAXFrame(from: element) else {
+                return false
+            }
+            return !frame.isEmpty
+        }
+}
+
+private func cancelMenu(_ menu: AXUIElement) {
+    _ = AXUIElementPerformAction(menu, kAXCancelAction as CFString)
+}
+
+private func closeMenuBarSurface(_ surface: MenuBarSurface, item: MenuBarCatalogItem) {
+    switch surface {
+    case .menu(let menu):
+        cancelMenu(menu)
+    case .window:
+        _ = AXUIElementPerformAction(item.element, kAXPressAction as CFString)
+    }
+}
+
+private func captureRegion(
+    forMenuFrame frame: CGRect?,
+    item: MenuBarCatalogItem
+) throws -> CaptureRegion {
+    guard let frame, !frame.isEmpty else {
+        throw RegionShotError.captureFailed("The opened menu for \(formatMenuBarCandidate(item)) did not expose a visible frame.")
+    }
+
+    let minX = Int(floor(frame.minX))
+    let minY = Int(floor(frame.minY))
+    let maxX = Int(ceil(frame.maxX))
+    let maxY = Int(ceil(frame.maxY))
+    let originX = max(0, minX)
+    let originY = max(0, minY)
+    let region = CaptureRegion(
+        x: originX,
+        y: originY,
+        width: maxX - originX,
+        height: maxY - originY
+    )
+    try validate(region: region)
+    return region
 }
 
 private func performPress(on element: AXUIElement) throws {
