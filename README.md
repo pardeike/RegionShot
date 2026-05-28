@@ -62,6 +62,9 @@ If you are not using Terminal.app, replace `Terminal` with the app you are runni
 ```bash
 regionshot
 regionshot --find-app RimWorld
+regionshot --ascii /tmp/screenshot.png
+regionshot --ascii /tmp/screenshot.png --ascii-width 160 --ascii-max-height 80
+regionshot --ascii /tmp/screenshot.png --ascii-style tone --ascii-width 100 --ascii-max-height 60
 regionshot 120 240 800 600
 regionshot --x 120 --y 240 --width 800 --height 600
 regionshot --app "System Settings"
@@ -97,6 +100,8 @@ With `--app`, the value may be either:
 - a process id such as `12345`
 
 If you do not know the exact running app name, use `--find-app TEXT`. It prints compact JSON with matching app names, pids, bundle identifiers, paths, activation policy, and visible-window counts.
+
+`--ascii IMAGE` reads an existing screenshot or image file and prints a plain-text inspection report to stdout. By default it uses `--ascii-style layout`: sparse borders, dividers, and scrollbars are rendered while Vision OCR text is overlaid at approximate screenshot positions. The full OCR block list is also printed below the layout map with pixel bounds and confidence. Use `--ascii-width N` (layout default `160`, range `16...240`) and `--ascii-max-height N` (layout default `100`, range `8...240`) to control output size. Use `--ascii-style tone` for the older luminance-ramp rendering, `--ascii-invert` for tone images where the light/dark mapping is backwards, or `--ascii-no-ocr` when you only want structural layout.
 
 If `--app` is provided without rectangle coordinates or a specific window flag, `regionshot` prints a JSON window list to stdout for inspection.
 

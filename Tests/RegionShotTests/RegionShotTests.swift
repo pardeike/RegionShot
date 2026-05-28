@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import XCTest
 @testable import RegionShot
 
@@ -11,6 +12,53 @@ final class RegionShotTests: XCTestCase {
         }
 
         XCTAssertEqual(command.query, "RimWorld")
+    }
+
+    func testAsciiArtParsing() throws {
+        let behavior = try parse(arguments: [
+            "--ascii", "/tmp/screenshot.png",
+            "--ascii-width", "100",
+            "--ascii-max-height", "40",
+            "--ascii-invert",
+            "--ascii-no-ocr",
+        ])
+
+        guard case .asciiArt(let command) = behavior else {
+            return XCTFail("Expected ascii-art behavior.")
+        }
+
+        XCTAssertEqual(command.imageURL.path, "/tmp/screenshot.png")
+        XCTAssertEqual(command.style, .layout)
+        XCTAssertEqual(command.width, 100)
+        XCTAssertEqual(command.maxHeight, 40)
+        XCTAssertTrue(command.invert)
+        XCTAssertFalse(command.includeOCR)
+    }
+
+    func testAsciiArtParsingUsesDefaults() throws {
+        let behavior = try parse(arguments: ["--ascii", "/tmp/screenshot.png"])
+
+        guard case .asciiArt(let command) = behavior else {
+            return XCTFail("Expected ascii-art behavior.")
+        }
+
+        XCTAssertEqual(command.style, .layout)
+        XCTAssertEqual(command.width, 160)
+        XCTAssertEqual(command.maxHeight, 100)
+        XCTAssertFalse(command.invert)
+        XCTAssertTrue(command.includeOCR)
+    }
+
+    func testAsciiArtParsingSupportsToneStyleDefaults() throws {
+        let behavior = try parse(arguments: ["--ascii", "/tmp/screenshot.png", "--ascii-style", "tone"])
+
+        guard case .asciiArt(let command) = behavior else {
+            return XCTFail("Expected ascii-art behavior.")
+        }
+
+        XCTAssertEqual(command.style, .tone)
+        XCTAssertEqual(command.width, 120)
+        XCTAssertEqual(command.maxHeight, 80)
     }
 
     func testVisibleWindowCaptureParsing() throws {
@@ -44,6 +92,44 @@ final class RegionShotTests: XCTestCase {
         }
 
         XCTAssertEqual(command.screenCaptureTimeout, 0.25, accuracy: 0.001)
+    }
+
+    func testAsciiArtRejectsMixedModes() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--ascii", "/tmp/screenshot.png", "--app", "Terminal"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--ascii"))
+        }
+    }
+
+    func testAsciiArtRejectsInvalidDimensions() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--ascii", "/tmp/screenshot.png", "--ascii-width", "15"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--ascii-width"))
+        }
+
+        XCTAssertThrowsError(
+            try parse(arguments: ["--ascii", "/tmp/screenshot.png", "--ascii-max-height", "7"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--ascii-max-height"))
+        }
+    }
+
+    func testAsciiArtRejectsInvalidStyle() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--ascii", "/tmp/screenshot.png", "--ascii-style", "photo"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--ascii-style"))
+        }
+    }
+
+    func testAsciiArtOptionsRequireAsciiMode() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--ascii-width", "100"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--ascii"))
+        }
     }
 
     func testFindAppRejectsMixedModes() {
@@ -98,6 +184,145 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(windows[0].title, "Front")
     }
 
+    func testAsciiRendererPreservesTopToBottomOrientation() throws {
+        let image = try makeGrayscaleImage(
+            width: 2,
+            height: 4,
+            pixels: [
+                0, 0,
+                0, 0,
+                255, 255,
+                255, 255,
+            ]
+        )
+
+        let rendered = try renderAsciiArt(
+            from: image,
+            options: AsciiArtOptions(width: 2, maxHeight: 2, invert: false)
+        )
+        let lines = rendered.text.components(separatedBy: "\n")
+
+        XCTAssertEqual(rendered.width, 2)
+        XCTAssertEqual(rendered.height, 2)
+        XCTAssertEqual(lines, ["@@", "  "])
+    }
+
+    func testAsciiRendererCanInvertLightness() throws {
+        let image = try makeGrayscaleImage(
+            width: 2,
+            height: 4,
+            pixels: [
+                0, 0,
+                0, 0,
+                255, 255,
+                255, 255,
+            ]
+        )
+
+        let rendered = try renderAsciiArt(
+            from: image,
+            options: AsciiArtOptions(width: 2, maxHeight: 2, invert: true)
+        )
+
+        XCTAssertEqual(rendered.text.components(separatedBy: "\n"), ["  ", "@@"])
+    }
+
+    func testAsciiLayoutOverlaysOCRText() throws {
+        let image = try makeGrayscaleImage(width: 80, height: 40, pixels: Array(repeating: 255, count: 80 * 40))
+        let rendered = try renderAsciiLayout(
+            from: image,
+            options: AsciiLayoutOptions(width: 40, maxHeight: 10),
+            textBlocks: [
+                OCRTextBlock(
+                    text: "Finder Window",
+                    confidence: 0.9,
+                    bounds: CGRect(x: 10, y: 8, width: 32, height: 8)
+                ),
+            ]
+        )
+
+        XCTAssertTrue(rendered.text.contains("Finder Window"))
+    }
+
+    func testAsciiLayoutWrapsLongOCRText() throws {
+        let image = try makeGrayscaleImage(width: 80, height: 40, pixels: Array(repeating: 255, count: 80 * 40))
+        let rendered = try renderAsciiLayout(
+            from: image,
+            options: AsciiLayoutOptions(width: 24, maxHeight: 10),
+            textBlocks: [
+                OCRTextBlock(
+                    text: "This is a very long Finder row",
+                    confidence: 0.9,
+                    bounds: CGRect(x: 48, y: 10, width: 16, height: 8)
+                ),
+            ]
+        )
+
+        XCTAssertTrue(rendered.text.contains("This is"))
+        XCTAssertTrue(rendered.text.contains("Finder row"))
+    }
+
+    func testAsciiLayoutDrawsSparseEdges() throws {
+        let image = try makeGrayscaleImage(
+            width: 20,
+            height: 20,
+            pixels: borderedPixels(width: 20, height: 20)
+        )
+        let rendered = try renderAsciiLayout(
+            from: image,
+            options: AsciiLayoutOptions(width: 20, maxHeight: 10),
+            textBlocks: []
+        )
+
+        XCTAssertTrue(rendered.text.contains("-") || rendered.text.contains("|") || rendered.text.contains("+"))
+    }
+
+    func testOCRFormattingSortsBlocksForReadingOrder() {
+        let formatted = formatOCRTextBlocks([
+            OCRTextBlock(
+                text: "Bottom",
+                confidence: 0.8,
+                bounds: CGRect(x: 10, y: 100, width: 60, height: 14)
+            ),
+            OCRTextBlock(
+                text: "Top \"Menu\"",
+                confidence: 0.93,
+                bounds: CGRect(x: 5, y: 10, width: 40, height: 8)
+            ),
+        ])
+
+        XCTAssertEqual(
+            formatted.components(separatedBy: "\n"),
+            [
+                "ocr:",
+                "- [x=5 y=10 w=40 h=8 confidence=0.93] \"Top \\\"Menu\\\"\"",
+                "- [x=10 y=100 w=60 h=14 confidence=0.80] \"Bottom\"",
+            ]
+        )
+    }
+
+    func testAsciiReportFormatsDisabledOCR() {
+        let report = formatAsciiArtReport(
+            imagePath: "/tmp/screenshot.png",
+            imageWidth: 200,
+            imageHeight: 100,
+            style: .layout,
+            rendered: RenderedAsciiArt(width: 4, height: 1, text: "@@  "),
+            ocrStatus: .disabled
+        )
+
+        let expected = [
+            "image: /tmp/screenshot.png",
+            "size: 200x100 px",
+            "layout: 4x1 chars",
+            "@@  ",
+            "",
+            "ocr: disabled",
+        ].joined(separator: "\n")
+
+        XCTAssertEqual(report, expected)
+    }
+
     func testTimeoutReturnsFailureWithoutWaitingForOperation() async throws {
         let start = Date()
 
@@ -125,5 +350,49 @@ final class RegionShotTests: XCTestCase {
         )
 
         XCTAssertEqual(value, 42)
+    }
+}
+
+private func makeGrayscaleImage(width: Int, height: Int, pixels: [UInt8]) throws -> CGImage {
+    XCTAssertEqual(pixels.count, width * height)
+
+    var rgba: [UInt8] = []
+    rgba.reserveCapacity(width * height * 4)
+
+    for pixel in pixels {
+        rgba.append(pixel)
+        rgba.append(pixel)
+        rgba.append(pixel)
+        rgba.append(255)
+    }
+
+    guard
+        let data = CFDataCreate(nil, rgba, rgba.count),
+        let provider = CGDataProvider(data: data),
+        let image = CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )
+    else {
+        throw RegionShotError.captureFailed("Failed to create test image.")
+    }
+
+    return image
+}
+
+private func borderedPixels(width: Int, height: Int) -> [UInt8] {
+    (0..<height).flatMap { row in
+        (0..<width).map { column in
+            row == 0 || row == height - 1 || column == 0 || column == width - 1 ? UInt8(0) : UInt8(255)
+        }
     }
 }

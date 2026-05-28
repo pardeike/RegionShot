@@ -6,6 +6,7 @@ import Foundation
 import ImageIO
 @preconcurrency import ScreenCaptureKit
 import UniformTypeIdentifiers
+@preconcurrency import Vision
 
 @main
 struct RegionShot {
@@ -21,6 +22,9 @@ struct RegionShot {
             case .findApps(let command):
                 let json = try findApps(using: command)
                 print(json)
+            case .asciiArt(let command):
+                let text = try asciiArtReport(using: command)
+                print(text)
             case .capture(let command):
                 try await capture(using: command)
                 print(command.outputURL.path)
@@ -54,6 +58,7 @@ struct RegionShot {
 enum CommandBehavior: Sendable {
     case showHelp
     case findApps(FindAppsCommand)
+    case asciiArt(AsciiArtCommand)
     case capture(CaptureCommand)
     case captureVisibleWindow(VisibleWindowCaptureCommand)
     case listWindows(ListWindowsCommand)
@@ -73,6 +78,15 @@ struct CaptureCommand: Sendable {
 
 struct FindAppsCommand: Sendable {
     let query: String
+}
+
+struct AsciiArtCommand: Sendable {
+    let imageURL: URL
+    let style: AsciiArtStyle
+    let width: Int
+    let maxHeight: Int
+    let invert: Bool
+    let includeOCR: Bool
 }
 
 struct ListWindowsCommand: Sendable {
@@ -153,6 +167,34 @@ struct WindowPoint: Sendable {
     var point: CGPoint {
         CGPoint(x: x, y: y)
     }
+}
+
+struct AsciiArtOptions: Sendable {
+    let width: Int
+    let maxHeight: Int
+    let invert: Bool
+}
+
+struct AsciiLayoutOptions: Sendable {
+    let width: Int
+    let maxHeight: Int
+}
+
+struct RenderedAsciiArt: Sendable {
+    let width: Int
+    let height: Int
+    let text: String
+}
+
+struct OCRTextBlock: Sendable {
+    let text: String
+    let confidence: Float
+    let bounds: CGRect
+}
+
+enum AsciiArtStyle: String, Sendable {
+    case layout
+    case tone
 }
 
 enum ApplicationSelector: Sendable {
@@ -566,6 +608,12 @@ enum RegionShotError: LocalizedError, Sendable {
 }
 
 private let defaultScreenCaptureKitTimeout: TimeInterval = 5.0
+private let defaultLayoutAsciiWidth = 160
+private let defaultLayoutAsciiMaxHeight = 100
+private let defaultToneAsciiWidth = 120
+private let defaultToneAsciiMaxHeight = 80
+private let asciiWidthRange = 16...240
+private let asciiMaxHeightRange = 8...240
 
 private let usageText = """
 regionshot = macOS screenshot wrapper around native `screencapture` and `ScreenCaptureKit`.
@@ -573,10 +621,12 @@ regionshot = macOS screenshot wrapper around native `screencapture` and `ScreenC
 Output:
   capture mode -> writes a PNG file, then prints the final path to stdout
   inspect mode -> prints JSON to stdout
+  ascii mode -> reads an image file, then prints layout ASCII and OCR text to stdout
   errors -> stderr, non-zero exit
 
 Forms:
   regionshot --find-app TEXT
+  regionshot --ascii IMAGE [--ascii-style layout|tone] [--ascii-width N] [--ascii-max-height N] [--ascii-invert] [--ascii-no-ocr]
   regionshot X Y WIDTH HEIGHT [--app APP] [--output FILE]
   regionshot --x X --y Y --width WIDTH --height HEIGHT [--app APP] [--output FILE]
   regionshot --app APP [--timeout SECONDS]
@@ -611,6 +661,11 @@ Forms:
 Rules:
   `--app` accepts app name, bundle id, or pid
   use `--find-app TEXT` when the exact running app name or pid is unknown
+  `--ascii IMAGE` reads an existing screenshot/image and prints text-first layout ASCII plus OCR text
+  `--ascii-style layout` is the default; use `--ascii-style tone` for the old luminance-ramp rendering
+  layout defaults: `--ascii-width 160`, `--ascii-max-height 100`; tone defaults: width 120, max-height 80
+  `--ascii-width` accepts 16...240; `--ascii-max-height` accepts 8...240
+  `--ascii-invert` flips light/dark mapping for tone style; `--ascii-no-ocr` disables Vision text recognition
   `--app` alone == inspect mode == same as `--list-windows`
   window list JSON includes frontmost-first indices, titles, and bounds
   `--visible-window` uses visible pixels from the current screen; occluding windows are included
@@ -952,9 +1007,60 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     let pressPoint = try parseWindowPoint(parsed.values["--press-at"], flag: "--press-at")
     let selector = parseAccessibilitySelector(from: parsed.values)
     let outputPath = parsed.values["--output"]
+    let asciiImagePath = normalizedArgumentValue(parsed.values["--ascii"])
+    let asciiStyle = try parseAsciiStyle(parsed.values["--ascii-style"])
+    let wantsAsciiInvert = parsed.flags.contains("--ascii-invert")
+    let wantsAsciiNoOCR = parsed.flags.contains("--ascii-no-ocr")
+    let asciiDefaultWidth = asciiStyle == .layout ? defaultLayoutAsciiWidth : defaultToneAsciiWidth
+    let asciiDefaultMaxHeight = asciiStyle == .layout ? defaultLayoutAsciiMaxHeight : defaultToneAsciiMaxHeight
+    let hasAsciiOption = parsed.values["--ascii-width"] != nil ||
+        parsed.values["--ascii-max-height"] != nil ||
+        parsed.values["--ascii-style"] != nil ||
+        wantsAsciiInvert ||
+        wantsAsciiNoOCR
 
     if parsed.values["--find-app"] != nil, findAppQuery == nil {
         throw RegionShotError.invalidArguments("`--find-app` requires a non-empty search string.")
+    }
+
+    if parsed.values["--ascii"] != nil, asciiImagePath == nil {
+        throw RegionShotError.invalidArguments("`--ascii` requires a non-empty image path.")
+    }
+
+    if let asciiImagePath {
+        let allowedValueKeys: Set<String> = ["--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style"]
+        let allowedFlagKeys: Set<String> = ["--help", "-h", "--ascii-invert", "--ascii-no-ocr"]
+        let hasOtherValue = parsed.values.keys.contains { !allowedValueKeys.contains($0) }
+        let hasOtherFlag = parsed.flags.contains { !allowedFlagKeys.contains($0) }
+
+        if parsed.region != nil || hasOtherValue || hasOtherFlag {
+            throw RegionShotError.invalidArguments("`--ascii` cannot be combined with capture, app/window, menu-bar, Accessibility, `--find-app`, or `--output` modes.")
+        }
+
+        return .asciiArt(
+            AsciiArtCommand(
+                imageURL: try inputURL(from: asciiImagePath),
+                style: asciiStyle,
+                width: try parseAsciiDimension(
+                    parsed.values["--ascii-width"],
+                    flag: "--ascii-width",
+                    defaultValue: asciiDefaultWidth,
+                    allowedRange: asciiWidthRange
+                ),
+                maxHeight: try parseAsciiDimension(
+                    parsed.values["--ascii-max-height"],
+                    flag: "--ascii-max-height",
+                    defaultValue: asciiDefaultMaxHeight,
+                    allowedRange: asciiMaxHeightRange
+                ),
+                invert: wantsAsciiInvert,
+                includeOCR: !wantsAsciiNoOCR
+            )
+        )
+    }
+
+    if hasAsciiOption {
+        throw RegionShotError.invalidArguments("`--ascii-style`, `--ascii-width`, `--ascii-max-height`, `--ascii-invert`, and `--ascii-no-ocr` require `--ascii IMAGE`.")
     }
 
     if let findAppQuery {
@@ -1296,10 +1402,10 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         let argument = arguments[index]
 
         switch argument {
-        case "--help", "-h", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-elements", "--list-menu-bar-items", "--press", "--press-element", "--capture-menu":
+        case "--help", "-h", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-elements", "--list-menu-bar-items", "--press", "--press-element", "--capture-menu", "--ascii-invert", "--ascii-no-ocr":
             flags.insert(argument)
             index += 1
-        case "--x", "--y", "--width", "--height", "--output", "--app", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description":
+        case "--x", "--y", "--width", "--height", "--output", "--app", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style":
             let valueIndex = index + 1
             guard valueIndex < arguments.count else {
                 throw RegionShotError.invalidArguments("Missing value for \(argument).")
@@ -1474,6 +1580,19 @@ private func outputURL(from path: String?) throws -> URL {
         return temporaryOutputURL()
     }
 
+    return fileURL(from: path)
+}
+
+private func inputURL(from path: String) throws -> URL {
+    let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedPath.isEmpty else {
+        throw RegionShotError.invalidArguments("Expected a non-empty file path.")
+    }
+
+    return fileURL(from: trimmedPath)
+}
+
+private func fileURL(from path: String) -> URL {
     let expandedPath = (path as NSString).expandingTildeInPath
     let fileURL: URL
 
@@ -1511,6 +1630,41 @@ private func parseTimeout(_ rawValue: String?) throws -> TimeInterval {
     }
 
     return timeout
+}
+
+private func parseAsciiStyle(_ rawValue: String?) throws -> AsciiArtStyle {
+    guard let rawValue else {
+        return .layout
+    }
+
+    let normalizedValue = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !normalizedValue.isEmpty else {
+        throw RegionShotError.invalidArguments("`--ascii-style` requires `layout` or `tone`.")
+    }
+
+    guard let style = AsciiArtStyle(rawValue: normalizedValue) else {
+        throw RegionShotError.invalidArguments("`--ascii-style` must be `layout` or `tone`, got `\(rawValue)`.")
+    }
+
+    return style
+}
+
+private func parseAsciiDimension(
+    _ rawValue: String?,
+    flag: String,
+    defaultValue: Int,
+    allowedRange: ClosedRange<Int>
+) throws -> Int {
+    guard let rawValue else {
+        return defaultValue
+    }
+
+    let dimension = try parseInteger(rawValue, flag: flag)
+    guard allowedRange.contains(dimension) else {
+        throw RegionShotError.invalidArguments("`\(flag)` must be between \(allowedRange.lowerBound) and \(allowedRange.upperBound).")
+    }
+
+    return dimension
 }
 
 private func validate(region: CaptureRegion) throws {
@@ -1811,6 +1965,705 @@ private func captureVisibleWindow(using command: VisibleWindowCaptureCommand) th
     } catch RegionShotError.captureFailed(let message) {
         throw RegionShotError.captureFailed("Failed to capture visible window [\(window.index)] \(displayTitle(window.title)) for `\(catalog.application.name)` at `\(region.rectangleArgument)`: \(message)")
     }
+}
+
+private func asciiArtReport(using command: AsciiArtCommand) throws -> String {
+    let image = try loadImage(at: command.imageURL)
+    let ocrStatus: OCRReportStatus
+    if command.includeOCR {
+        do {
+            ocrStatus = .blocks(try recognizeTextBlocks(in: image))
+        } catch {
+            ocrStatus = .unavailable(error.localizedDescription)
+        }
+    } else {
+        ocrStatus = .disabled
+    }
+
+    let rendered: RenderedAsciiArt
+    switch command.style {
+    case .layout:
+        let textBlocks: [OCRTextBlock]
+        if case .blocks(let blocks) = ocrStatus {
+            textBlocks = blocks
+        } else {
+            textBlocks = []
+        }
+
+        rendered = try renderAsciiLayout(
+            from: image,
+            options: AsciiLayoutOptions(
+                width: command.width,
+                maxHeight: command.maxHeight
+            ),
+            textBlocks: textBlocks
+        )
+    case .tone:
+        rendered = try renderAsciiArt(
+            from: image,
+            options: AsciiArtOptions(
+                width: command.width,
+                maxHeight: command.maxHeight,
+                invert: command.invert
+            )
+        )
+    }
+
+    return formatAsciiArtReport(
+        imagePath: command.imageURL.path,
+        imageWidth: image.width,
+        imageHeight: image.height,
+        style: command.style,
+        rendered: rendered,
+        ocrStatus: ocrStatus
+    )
+}
+
+private func loadImage(at imageURL: URL) throws -> CGImage {
+    guard FileManager.default.fileExists(atPath: imageURL.path) else {
+        throw RegionShotError.captureFailed("Image file not found: \(imageURL.path)")
+    }
+
+    guard let source = CGImageSourceCreateWithURL(imageURL as CFURL, nil) else {
+        throw RegionShotError.captureFailed("Failed to read image data from \(imageURL.path).")
+    }
+
+    guard let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCache: true] as CFDictionary) else {
+        throw RegionShotError.captureFailed("Failed to decode an image from \(imageURL.path).")
+    }
+
+    return image
+}
+
+func renderAsciiArt(from image: CGImage, options: AsciiArtOptions) throws -> RenderedAsciiArt {
+    guard image.width > 0, image.height > 0 else {
+        throw RegionShotError.captureFailed("Cannot render ASCII art for an empty image.")
+    }
+
+    guard options.width > 0, options.maxHeight > 0 else {
+        throw RegionShotError.invalidArguments("ASCII width and max height must be greater than zero.")
+    }
+
+    let targetWidth = options.width
+    let aspectRatio = Double(image.height) / Double(image.width)
+    let naturalHeight = max(1, Int((Double(targetWidth) * aspectRatio * 0.5).rounded()))
+    let targetHeight = min(options.maxHeight, naturalHeight)
+    let renderedPixels = try renderImagePixels(
+        from: image,
+        width: targetWidth,
+        height: targetHeight,
+        interpolationQuality: .medium,
+        failureContext: "ASCII"
+    )
+
+    let ramp = Array("@%#*+=-:. ")
+    var lines: [String] = []
+    lines.reserveCapacity(targetHeight)
+
+    for row in 0..<targetHeight {
+        var line = ""
+        line.reserveCapacity(targetWidth)
+
+        for column in 0..<targetWidth {
+            let luminance = renderedPixels.luminance(atColumn: column, row: row)
+            let mappedLuminance = options.invert ? 255 - luminance : luminance
+            let rampIndex = min(
+                ramp.count - 1,
+                max(0, Int((Double(mappedLuminance) / 255.0) * Double(ramp.count - 1)))
+            )
+
+            line.append(ramp[rampIndex])
+        }
+
+        lines.append(line)
+    }
+
+    return RenderedAsciiArt(
+        width: targetWidth,
+        height: targetHeight,
+        text: lines.joined(separator: "\n")
+    )
+}
+
+func renderAsciiLayout(from image: CGImage, options: AsciiLayoutOptions, textBlocks: [OCRTextBlock]) throws -> RenderedAsciiArt {
+    guard image.width > 0, image.height > 0 else {
+        throw RegionShotError.captureFailed("Cannot render ASCII layout for an empty image.")
+    }
+
+    guard options.width > 0, options.maxHeight > 0 else {
+        throw RegionShotError.invalidArguments("ASCII width and max height must be greater than zero.")
+    }
+
+    let targetWidth = options.width
+    let aspectRatio = Double(image.height) / Double(image.width)
+    let naturalHeight = max(1, Int((Double(targetWidth) * aspectRatio * 0.5).rounded()))
+    let targetHeight = min(options.maxHeight, naturalHeight)
+    let renderedPixels = try renderImagePixels(
+        from: image,
+        width: targetWidth,
+        height: targetHeight,
+        interpolationQuality: .medium,
+        failureContext: "ASCII layout"
+    )
+    var canvas = makeCharacterCanvas(width: targetWidth, height: targetHeight)
+    let luminanceGrid = luminanceGrid(from: renderedPixels)
+
+    drawLayoutEdges(on: &canvas, luminanceGrid: luminanceGrid)
+    clearOCRRegions(
+        on: &canvas,
+        textBlocks: textBlocks,
+        imageWidth: image.width,
+        imageHeight: image.height
+    )
+    overlayOCRText(
+        on: &canvas,
+        textBlocks: textBlocks,
+        imageWidth: image.width,
+        imageHeight: image.height
+    )
+
+    return RenderedAsciiArt(
+        width: targetWidth,
+        height: targetHeight,
+        text: canvas.map { String($0) }.joined(separator: "\n")
+    )
+}
+
+private struct RenderedImagePixels {
+    let width: Int
+    let height: Int
+    let bytesPerRow: Int
+    let pixels: [UInt8]
+
+    func luminance(atColumn column: Int, row: Int) -> Int {
+        let offset = (row * bytesPerRow) + (column * 4)
+        let red = Double(pixels[offset])
+        let green = Double(pixels[offset + 1])
+        let blue = Double(pixels[offset + 2])
+        return Int((0.2126 * red + 0.7152 * green + 0.0722 * blue).rounded())
+    }
+}
+
+private func renderImagePixels(
+    from image: CGImage,
+    width targetWidth: Int,
+    height targetHeight: Int,
+    interpolationQuality: CGInterpolationQuality,
+    failureContext: String
+) throws -> RenderedImagePixels {
+    let bytesPerPixel = 4
+    let bytesPerRow = targetWidth * bytesPerPixel
+    var pixels = [UInt8](repeating: 255, count: bytesPerRow * targetHeight)
+
+    try pixels.withUnsafeMutableBytes { rawBuffer in
+        guard let baseAddress = rawBuffer.baseAddress else {
+            throw RegionShotError.captureFailed("Failed to allocate an \(failureContext) render buffer.")
+        }
+
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGBitmapInfo.byteOrder32Big.rawValue |
+            CGImageAlphaInfo.premultipliedLast.rawValue
+
+        guard let context = CGContext(
+            data: baseAddress,
+            width: targetWidth,
+            height: targetHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ) else {
+            throw RegionShotError.captureFailed("Failed to create an \(failureContext) render context.")
+        }
+
+        let targetRect = CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight)
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        context.fill(targetRect)
+        context.interpolationQuality = interpolationQuality
+        context.draw(image, in: targetRect)
+    }
+
+    return RenderedImagePixels(
+        width: targetWidth,
+        height: targetHeight,
+        bytesPerRow: bytesPerRow,
+        pixels: pixels
+    )
+}
+
+private func luminanceGrid(from pixels: RenderedImagePixels) -> [[Int]] {
+    (0..<pixels.height).map { row in
+        (0..<pixels.width).map { column in
+            pixels.luminance(atColumn: column, row: row)
+        }
+    }
+}
+
+private func makeCharacterCanvas(width: Int, height: Int) -> [[Character]] {
+    Array(repeating: Array(repeating: Character(" "), count: width), count: height)
+}
+
+private func drawLayoutEdges(on canvas: inout [[Character]], luminanceGrid: [[Int]]) {
+    let height = luminanceGrid.count
+    guard height > 2, let width = luminanceGrid.first?.count, width > 2 else {
+        return
+    }
+
+    let strongEdgeThreshold = 42
+
+    for row in 1..<(height - 1) {
+        for column in 1..<(width - 1) {
+            let horizontalGradient = abs(luminanceGrid[row][column + 1] - luminanceGrid[row][column - 1])
+            let verticalGradient = abs(luminanceGrid[row + 1][column] - luminanceGrid[row - 1][column])
+            let localContrast = max(horizontalGradient, verticalGradient)
+
+            guard localContrast >= strongEdgeThreshold else {
+                continue
+            }
+
+            let character: Character
+            if horizontalGradient >= strongEdgeThreshold, verticalGradient >= strongEdgeThreshold {
+                character = "+"
+            } else if horizontalGradient > verticalGradient {
+                character = "|"
+            } else {
+                character = "-"
+            }
+
+            canvas[row][column] = character
+        }
+    }
+}
+
+private func clearOCRRegions(
+    on canvas: inout [[Character]],
+    textBlocks: [OCRTextBlock],
+    imageWidth: Int,
+    imageHeight: Int
+) {
+    let gridHeight = canvas.count
+    guard gridHeight > 0, let gridWidth = canvas.first?.count else {
+        return
+    }
+
+    for block in textBlocks {
+        let rect = gridRect(
+            forPixelRect: block.bounds,
+            imageWidth: imageWidth,
+            imageHeight: imageHeight,
+            gridWidth: gridWidth,
+            gridHeight: gridHeight
+        ).expandedBy(columns: 1, rows: 1, gridWidth: gridWidth, gridHeight: gridHeight)
+
+        for row in rect.row..<(rect.row + rect.height) {
+            for column in rect.column..<(rect.column + rect.width) {
+                canvas[row][column] = " "
+            }
+        }
+    }
+}
+
+private func overlayOCRText(
+    on canvas: inout [[Character]],
+    textBlocks: [OCRTextBlock],
+    imageWidth: Int,
+    imageHeight: Int
+) {
+    let gridHeight = canvas.count
+    guard gridHeight > 0, let gridWidth = canvas.first?.count else {
+        return
+    }
+
+    var occupiedText = Array(repeating: Array(repeating: false, count: gridWidth), count: gridHeight)
+
+    for block in sortedOCRTextBlocks(textBlocks) {
+        let text = layoutText(block.text)
+        guard !text.isEmpty else {
+            continue
+        }
+
+        let rect = gridRect(
+            forPixelRect: block.bounds,
+            imageWidth: imageWidth,
+            imageHeight: imageHeight,
+            gridWidth: gridWidth,
+            gridHeight: gridHeight
+        )
+        let startColumn = min(max(0, rect.column), gridWidth - 1)
+        let baseRow = min(max(0, rect.row + rect.height / 2), gridHeight - 1)
+        let spillWidth = min(gridWidth - startColumn, max(rect.width, min(text.count, rect.width + 12)))
+        let chunks = wrapLayoutText(text, maxWidth: max(1, spillWidth))
+        var placedAllChunks = true
+
+        for (lineOffset, chunk) in chunks.enumerated() {
+            let preferredRow = min(gridHeight - 1, baseRow + lineOffset)
+            guard let row = firstAvailableTextRow(
+                preferredRow: preferredRow,
+                startColumn: startColumn,
+                textWidth: chunk.count,
+                occupiedText: occupiedText
+            ) else {
+                placedAllChunks = false
+                break
+            }
+
+            writeLayoutText(
+                chunk,
+                row: row,
+                column: startColumn,
+                canvas: &canvas,
+                occupiedText: &occupiedText
+            )
+        }
+
+        if !placedAllChunks {
+            let anchoredText = "@\(rect.row),\(rect.column) \(text)"
+            let fallback = String(anchoredText.prefix(max(1, gridWidth - startColumn)))
+            writeLayoutText(
+                fallback,
+                row: baseRow,
+                column: startColumn,
+                canvas: &canvas,
+                occupiedText: &occupiedText,
+                allowCollision: true
+            )
+        }
+    }
+}
+
+private struct GridRect {
+    let column: Int
+    let row: Int
+    let width: Int
+    let height: Int
+
+    func expandedBy(columns: Int, rows: Int, gridWidth: Int, gridHeight: Int) -> GridRect {
+        let expandedColumn = max(0, column - columns)
+        let expandedRow = max(0, row - rows)
+        let maxColumn = min(gridWidth, column + width + columns)
+        let maxRow = min(gridHeight, row + height + rows)
+
+        return GridRect(
+            column: expandedColumn,
+            row: expandedRow,
+            width: max(1, maxColumn - expandedColumn),
+            height: max(1, maxRow - expandedRow)
+        )
+    }
+}
+
+private func gridRect(
+    forPixelRect pixelRect: CGRect,
+    imageWidth: Int,
+    imageHeight: Int,
+    gridWidth: Int,
+    gridHeight: Int
+) -> GridRect {
+    let xScale = Double(gridWidth) / Double(imageWidth)
+    let yScale = Double(gridHeight) / Double(imageHeight)
+    let minColumn = min(max(0, Int(floor(Double(pixelRect.minX) * xScale))), gridWidth - 1)
+    let minRow = min(max(0, Int(floor(Double(pixelRect.minY) * yScale))), gridHeight - 1)
+    let maxColumn = min(max(minColumn + 1, Int(ceil(Double(pixelRect.maxX) * xScale))), gridWidth)
+    let maxRow = min(max(minRow + 1, Int(ceil(Double(pixelRect.maxY) * yScale))), gridHeight)
+
+    return GridRect(
+        column: minColumn,
+        row: minRow,
+        width: max(1, maxColumn - minColumn),
+        height: max(1, maxRow - minRow)
+    )
+}
+
+private func layoutText(_ text: String) -> String {
+    singleLineText(text)
+        .split(whereSeparator: { $0.isWhitespace })
+        .joined(separator: " ")
+}
+
+private func wrapLayoutText(_ text: String, maxWidth: Int) -> [String] {
+    guard text.count > maxWidth else {
+        return [text]
+    }
+
+    guard maxWidth > 0 else {
+        return [text]
+    }
+
+    var chunks: [String] = []
+
+    for word in text.split(separator: " ").map(String.init) {
+        if word.count > maxWidth {
+            chunks.append(contentsOf: splitLayoutWord(word, maxWidth: maxWidth))
+            continue
+        }
+
+        if let lastChunk = chunks.last, lastChunk.count + 1 + word.count <= maxWidth {
+            chunks[chunks.count - 1] = "\(lastChunk) \(word)"
+        } else {
+            chunks.append(word)
+        }
+    }
+
+    return chunks.isEmpty ? [text] : chunks
+}
+
+private func splitLayoutWord(_ word: String, maxWidth: Int) -> [String] {
+    let characters = Array(word)
+    var chunks: [String] = []
+    var index = 0
+
+    while index < characters.count {
+        let endIndex = min(index + maxWidth, characters.count)
+        chunks.append(String(characters[index..<endIndex]))
+        index = endIndex
+    }
+
+    return chunks
+}
+
+private func firstAvailableTextRow(
+    preferredRow: Int,
+    startColumn: Int,
+    textWidth: Int,
+    occupiedText: [[Bool]]
+) -> Int? {
+    let height = occupiedText.count
+    guard height > 0, let width = occupiedText.first?.count else {
+        return nil
+    }
+
+    let clampedPreferredRow = min(max(0, preferredRow), height - 1)
+    let offsets = [0, 1, -1, 2, -2, 3, -3]
+
+    for offset in offsets {
+        let candidateRow = clampedPreferredRow + offset
+        guard candidateRow >= 0, candidateRow < height else {
+            continue
+        }
+
+        let endColumn = min(width, startColumn + textWidth)
+        if (startColumn..<endColumn).allSatisfy({ !occupiedText[candidateRow][$0] }) {
+            return candidateRow
+        }
+    }
+
+    return nil
+}
+
+private func writeLayoutText(
+    _ text: String,
+    row: Int,
+    column: Int,
+    canvas: inout [[Character]],
+    occupiedText: inout [[Bool]],
+    allowCollision: Bool = false
+) {
+    guard row >= 0, row < canvas.count, let gridWidth = canvas.first?.count else {
+        return
+    }
+
+    let characters = Array(text)
+    for (offset, character) in characters.enumerated() {
+        let targetColumn = column + offset
+        guard targetColumn >= 0, targetColumn < gridWidth else {
+            break
+        }
+
+        if !allowCollision, occupiedText[row][targetColumn] {
+            continue
+        }
+
+        canvas[row][targetColumn] = character
+        occupiedText[row][targetColumn] = true
+    }
+}
+
+private func recognizeTextBlocks(in image: CGImage) throws -> [OCRTextBlock] {
+    let ocrImage = try normalizedImageForOCR(image)
+    let request = VNRecognizeTextRequest()
+    request.recognitionLevel = .accurate
+    request.usesLanguageCorrection = true
+    if let englishLanguage = try? request.supportedRecognitionLanguages().first(where: { $0 == "en-US" }) {
+        request.recognitionLanguages = [englishLanguage]
+    }
+
+    let handler = VNImageRequestHandler(cgImage: ocrImage, options: [:])
+    try handler.perform([request])
+
+    let blocks = (request.results ?? []).compactMap { observation -> OCRTextBlock? in
+        guard let candidate = observation.topCandidates(1).first else {
+            return nil
+        }
+
+        let text = normalizedOCRText(candidate.string)
+        guard !text.isEmpty else {
+            return nil
+        }
+
+        return OCRTextBlock(
+            text: text,
+            confidence: candidate.confidence,
+            bounds: pixelBounds(
+                forNormalizedVisionRect: observation.boundingBox,
+                imageWidth: ocrImage.width,
+                imageHeight: ocrImage.height
+            )
+        )
+    }
+
+    return sortedOCRTextBlocks(blocks)
+}
+
+private func normalizedImageForOCR(_ image: CGImage) throws -> CGImage {
+    let width = image.width
+    let height = image.height
+    let bytesPerPixel = 4
+    let bytesPerRow = width * bytesPerPixel
+    var pixels = [UInt8](repeating: 255, count: bytesPerRow * height)
+
+    return try pixels.withUnsafeMutableBytes { rawBuffer in
+        guard let baseAddress = rawBuffer.baseAddress else {
+            throw RegionShotError.captureFailed("Failed to allocate an OCR image buffer.")
+        }
+
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGBitmapInfo.byteOrder32Big.rawValue |
+            CGImageAlphaInfo.premultipliedLast.rawValue
+
+        guard let context = CGContext(
+            data: baseAddress,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo
+        ) else {
+            throw RegionShotError.captureFailed("Failed to create an OCR image context.")
+        }
+
+        let imageRect = CGRect(x: 0, y: 0, width: width, height: height)
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        context.fill(imageRect)
+        context.interpolationQuality = .none
+        context.draw(image, in: imageRect)
+
+        guard let normalizedImage = context.makeImage() else {
+            throw RegionShotError.captureFailed("Failed to prepare image data for OCR.")
+        }
+
+        return normalizedImage
+    }
+}
+
+private func pixelBounds(forNormalizedVisionRect normalizedRect: CGRect, imageWidth: Int, imageHeight: Int) -> CGRect {
+    let width = CGFloat(imageWidth)
+    let height = CGFloat(imageHeight)
+    let minX = normalizedRect.minX * width
+    let maxY = normalizedRect.maxY * height
+
+    return CGRect(
+        x: minX.rounded(),
+        y: (height - maxY).rounded(),
+        width: (normalizedRect.width * width).rounded(),
+        height: (normalizedRect.height * height).rounded()
+    )
+}
+
+func sortedOCRTextBlocks(_ blocks: [OCRTextBlock]) -> [OCRTextBlock] {
+    blocks.sorted { lhs, rhs in
+        let rowTolerance = max(4, min(lhs.bounds.height, rhs.bounds.height) * 0.5)
+        let verticalDelta = abs(lhs.bounds.minY - rhs.bounds.minY)
+
+        if verticalDelta > rowTolerance {
+            return lhs.bounds.minY < rhs.bounds.minY
+        }
+
+        if lhs.bounds.minX != rhs.bounds.minX {
+            return lhs.bounds.minX < rhs.bounds.minX
+        }
+
+        return lhs.text < rhs.text
+    }
+}
+
+enum OCRReportStatus {
+    case disabled
+    case unavailable(String)
+    case blocks([OCRTextBlock])
+}
+
+func formatAsciiArtReport(
+    imagePath: String,
+    imageWidth: Int,
+    imageHeight: Int,
+    style: AsciiArtStyle,
+    rendered: RenderedAsciiArt,
+    ocrStatus: OCRReportStatus
+) -> String {
+    let outputLabel = style == .layout ? "layout" : "ascii"
+
+    return [
+        "image: \(imagePath)",
+        "size: \(imageWidth)x\(imageHeight) px",
+        "\(outputLabel): \(rendered.width)x\(rendered.height) chars",
+        rendered.text,
+        "",
+        formatOCRSection(ocrStatus),
+    ].joined(separator: "\n")
+}
+
+func formatOCRSection(_ status: OCRReportStatus) -> String {
+    switch status {
+    case .disabled:
+        return "ocr: disabled"
+    case .unavailable(let reason):
+        return "ocr: unavailable (\(singleLineText(reason)))"
+    case .blocks(let blocks):
+        return formatOCRTextBlocks(blocks)
+    }
+}
+
+func formatOCRTextBlocks(_ blocks: [OCRTextBlock]) -> String {
+    let sortedBlocks = sortedOCRTextBlocks(blocks)
+    guard !sortedBlocks.isEmpty else {
+        return "ocr: no text found"
+    }
+
+    var lines = ["ocr:"]
+    lines.reserveCapacity(sortedBlocks.count + 1)
+
+    for block in sortedBlocks {
+        let x = Int(block.bounds.minX.rounded())
+        let y = Int(block.bounds.minY.rounded())
+        let width = Int(block.bounds.width.rounded())
+        let height = Int(block.bounds.height.rounded())
+        let confidence = String(
+            format: "%.2f",
+            locale: Locale(identifier: "en_US_POSIX"),
+            Double(block.confidence)
+        )
+        lines.append("- [x=\(x) y=\(y) w=\(width) h=\(height) confidence=\(confidence)] \"\(escapedOCRText(block.text))\"")
+    }
+
+    return lines.joined(separator: "\n")
+}
+
+private func normalizedOCRText(_ text: String) -> String {
+    singleLineText(text).trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func singleLineText(_ text: String) -> String {
+    text
+        .replacingOccurrences(of: "\r\n", with: " ")
+        .replacingOccurrences(of: "\n", with: " ")
+        .replacingOccurrences(of: "\r", with: " ")
+}
+
+private func escapedOCRText(_ text: String) -> String {
+    singleLineText(text)
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
 }
 
 private func encodeJSON<T: Encodable>(_ value: T) throws -> String {

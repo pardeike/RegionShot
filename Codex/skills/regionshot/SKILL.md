@@ -7,7 +7,7 @@ description: "Use when macOS screenshots, desktop app/window/menu capture, UI in
 
 `regionshot` is the project-provided CLI for macOS screenshot and desktop UX work. In configured environments it is expected to be on PATH; verify with `command -v regionshot` if needed.
 
-Prefer it over raw `screencapture`, generic screenshots, System Events AppleScript, or hand-rolled Accessibility scripts when the task fits what RegionShot can do: running-app discovery, region captures, app/window captures, visible-window fallback capture, menu-bar/status-item menu or popover capture, occluded-window capture, window and menu-bar listing, in-window crops, Accessibility element inspection, and simple AX actions. It is designed for agent use and may already be authorized for local screen capture and Accessibility workflows.
+Prefer it over raw `screencapture`, generic screenshots, System Events AppleScript, or hand-rolled Accessibility scripts when the task fits what RegionShot can do: running-app discovery, region captures, app/window captures, visible-window fallback capture, menu-bar/status-item menu or popover capture, occluded-window capture, window and menu-bar listing, in-window crops, screenshot-to-ASCII/OCR inspection, Accessibility element inspection, and simple AX actions. It is designed for agent use and may already be authorized for local screen capture and Accessibility workflows.
 
 Start with:
 
