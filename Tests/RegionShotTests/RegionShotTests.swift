@@ -132,6 +132,48 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
+    func testPressMenuItemParsing() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Drafty",
+            "--menu-bar-index", "0",
+            "--press-menu-item", "Quick Tasks",
+        ])
+
+        guard case .menuBar(let command) = behavior else {
+            return XCTFail("Expected menu-bar behavior.")
+        }
+
+        guard case .name(let name) = command.applicationSelector else {
+            return XCTFail("Expected name application selector.")
+        }
+
+        guard case .index(let index) = command.selection else {
+            return XCTFail("Expected menu-bar index selection.")
+        }
+
+        guard case .pressMenuItem(let selection) = command.mode else {
+            return XCTFail("Expected child menu item press mode.")
+        }
+
+        XCTAssertEqual(name, "Drafty")
+        XCTAssertEqual(index, 0)
+        XCTAssertEqual(selection.query, "Quick Tasks")
+        XCTAssertNil(command.outputURL)
+    }
+
+    func testPressMenuItemRejectsOutput() {
+        XCTAssertThrowsError(
+            try parse(arguments: [
+                "--app", "Drafty",
+                "--menu-bar-index", "0",
+                "--press-menu-item", "Quick Tasks",
+                "--output", "/tmp/menu.png",
+            ])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--press-menu-item"))
+        }
+    }
+
     func testFindAppRejectsMixedModes() {
         XCTAssertThrowsError(
             try parse(arguments: ["--find-app", "RimWorld", "--app", "Terminal"])
@@ -159,6 +201,14 @@ final class RegionShotTests: XCTestCase {
                 alpha: 1
             ),
             WindowSnapshot(
+                windowID: 14,
+                ownerPID: 100,
+                title: "Floating Panel",
+                bounds: CGRect(x: 12, y: 24, width: 300, height: 120),
+                layer: 3,
+                alpha: 1
+            ),
+            WindowSnapshot(
                 windowID: 12,
                 ownerPID: 100,
                 title: "Transparent",
@@ -178,10 +228,13 @@ final class RegionShotTests: XCTestCase {
 
         let windows = visibleWindows(for: 100, snapshots: snapshots)
 
-        XCTAssertEqual(windows.count, 1)
+        XCTAssertEqual(windows.count, 2)
         XCTAssertEqual(windows[0].index, 0)
         XCTAssertEqual(windows[0].windowID, 11)
         XCTAssertEqual(windows[0].title, "Front")
+        XCTAssertEqual(windows[1].index, 1)
+        XCTAssertEqual(windows[1].windowID, 14)
+        XCTAssertEqual(windows[1].title, "Floating Panel")
     }
 
     func testAsciiRendererPreservesTopToBottomOrientation() throws {

@@ -118,6 +118,10 @@ struct MenuBarCommand: Sendable {
     let outputURL: URL?
 }
 
+struct MenuChildSelection: Sendable {
+    let query: String
+}
+
 struct AccessibilitySelector: Sendable {
     let role: String?
     let subrole: String?
@@ -244,6 +248,7 @@ enum AccessibilityMode: Sendable {
 enum MenuBarMode: Sendable {
     case listItems
     case pressItem
+    case pressMenuItem(MenuChildSelection)
     case captureMenu
 }
 
@@ -485,6 +490,14 @@ private struct MenuBarPressResponse: Encodable {
     let menu: AccessibilityElementResponse?
 }
 
+private struct MenuBarChildPressResponse: Encodable {
+    let application: WindowListApplication
+    let item: MenuBarItemEntry
+    let action: String
+    let menuItem: AccessibilityElementResponse
+    let ancestors: [AccessibilityElementResponse]
+}
+
 private struct MenuBarItemEntry: Encodable {
     let index: Int
     let source: String
@@ -614,6 +627,7 @@ private let defaultToneAsciiWidth = 120
 private let defaultToneAsciiMaxHeight = 80
 private let asciiWidthRange = 16...240
 private let asciiMaxHeightRange = 8...240
+private let maximumVisibleAppWindowLayer = 10
 
 private let usageText = """
 regionshot = macOS screenshot wrapper around native `screencapture` and `ScreenCaptureKit`.
@@ -638,8 +652,10 @@ Forms:
   regionshot --app APP --list-menu-bar-items
   regionshot --app APP --capture-menu [--output FILE]
   regionshot --app APP --menu-bar-index N --press
+  regionshot --app APP --menu-bar-index N --press-menu-item TEXT
   regionshot --app APP --menu-bar-index N --capture-menu [--output FILE]
   regionshot --app APP --menu-bar-item TEXT --press
+  regionshot --app APP --menu-bar-item TEXT --press-menu-item TEXT
   regionshot --app APP --menu-bar-item TEXT --capture-menu [--output FILE]
   regionshot --app APP --list-elements
   regionshot --app APP --press --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
@@ -668,11 +684,12 @@ Rules:
   `--ascii-invert` flips light/dark mapping for tone style; `--ascii-no-ocr` disables Vision text recognition
   `--app` alone == inspect mode == same as `--list-windows`
   window list JSON includes frontmost-first indices, titles, and bounds
-  `--visible-window` uses visible pixels from the current screen; occluding windows are included
+  `--visible-window` uses visible pixels from the current screen, including floating panels; occluding windows are included
   `--list-visible-windows` and `--visible-window` use CGWindowList and do not depend on ScreenCaptureKit window capture
   ScreenCaptureKit app/window operations time out after 5 seconds by default; use `--timeout SECONDS` to adjust
   menu-bar item list JSON includes status-item/app-menu indices, roles, actions, and bounds
   `--capture-menu` opens the selected menu-bar item, captures the visible menu or popover, and closes it
+  `--press-menu-item TEXT` opens the selected menu-bar item, then presses a child AXMenuItem by title, description, or identifier
   `--window-crop` is relative to the selected window's top-left in points
   prefer selector-based `--press` (alias: `--press-element`); use `--press-at` as fallback
   accessibility modes default to the app's focused window, then main window, then first window
@@ -998,6 +1015,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     let wantsVisibleWindowCapture = parsed.flags.contains("--visible-window")
     let wantsMenuBarList = parsed.flags.contains("--list-menu-bar-items")
     let wantsCaptureMenu = parsed.flags.contains("--capture-menu")
+    let pressMenuItemQuery = normalizedArgumentValue(parsed.values["--press-menu-item"])
     let menuBarSelection = try parseMenuBarSelection(parsed)
     let wantsElementList = parsed.flags.contains("--list-elements")
     let wantsPress = parsed.flags.contains("--press") || parsed.flags.contains("--press-element")
@@ -1025,6 +1043,10 @@ func parse(arguments: [String]) throws -> CommandBehavior {
 
     if parsed.values["--ascii"] != nil, asciiImagePath == nil {
         throw RegionShotError.invalidArguments("`--ascii` requires a non-empty image path.")
+    }
+
+    if parsed.values["--press-menu-item"] != nil, pressMenuItemQuery == nil {
+        throw RegionShotError.invalidArguments("`--press-menu-item` requires a non-empty child menu item title, description, or identifier.")
     }
 
     if let asciiImagePath {
@@ -1088,6 +1110,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     let menuBarModeCount = [
         wantsMenuBarList ? 1 : 0,
         wantsMenuBarPress ? 1 : 0,
+        pressMenuItemQuery != nil ? 1 : 0,
         wantsCaptureMenu ? 1 : 0,
     ].reduce(0, +)
 
@@ -1122,6 +1145,8 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         menuBarMode = .listItems
     } else if wantsMenuBarPress {
         menuBarMode = .pressItem
+    } else if let pressMenuItemQuery {
+        menuBarMode = .pressMenuItem(MenuChildSelection(query: pressMenuItemQuery))
     } else if wantsCaptureMenu {
         menuBarMode = .captureMenu
     } else {
@@ -1244,8 +1269,16 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         throw RegionShotError.invalidArguments("Menu-bar `--press` cannot be combined with selector fields. Use `--menu-bar-index` or `--menu-bar-item` to select a menu-bar item.")
     }
 
+    if pressMenuItemQuery != nil, outputPath != nil {
+        throw RegionShotError.invalidArguments("`--press-menu-item` prints JSON to stdout and does not use `--output`.")
+    }
+
+    if pressMenuItemQuery != nil, !selector.isEmpty {
+        throw RegionShotError.invalidArguments("`--press-menu-item` cannot be combined with selector fields. Pass the child menu item title, description, or identifier as the `--press-menu-item` value.")
+    }
+
     if menuBarSelection != nil, menuBarMode == nil {
-        throw RegionShotError.invalidArguments("`--menu-bar-index` and `--menu-bar-item` require menu-bar `--press` or `--capture-menu`.")
+        throw RegionShotError.invalidArguments("`--menu-bar-index` and `--menu-bar-item` require menu-bar `--press`, `--press-menu-item`, or `--capture-menu`.")
     }
 
     if accessibilityMode != nil, parsed.region != nil {
@@ -1405,7 +1438,7 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         case "--help", "-h", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-elements", "--list-menu-bar-items", "--press", "--press-element", "--capture-menu", "--ascii-invert", "--ascii-no-ocr":
             flags.insert(argument)
             index += 1
-        case "--x", "--y", "--width", "--height", "--output", "--app", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style":
+        case "--x", "--y", "--width", "--height", "--output", "--app", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style":
             let valueIndex = index + 1
             guard valueIndex < arguments.count else {
                 throw RegionShotError.invalidArguments("Missing value for \(argument).")
@@ -1908,6 +1941,30 @@ private func handleMenuBar(using command: MenuBarCommand) async throws -> String
             menu: menu.map { accessibilityElementResponse(for: $0, depthRemaining: 2) }
         )
         return try encodeJSON(response)
+    case .pressMenuItem(let childSelection):
+        let item = try selectMenuBarItem(from: catalog, using: command.selection)
+        guard let menu = try activateMenuBarItem(item, requireVisibleMenu: true) else {
+            throw RegionShotError.accessibilityQueryFailed("No visible AX menu appeared after pressing \(formatMenuBarCandidate(item)).")
+        }
+
+        do {
+            let menuItem = try selectMenuChildItem(in: menu, matching: childSelection)
+            let menuItemResponse = accessibilityElementResponse(for: menuItem.element, depthRemaining: 1)
+            let ancestors = accessibilityAncestorResponses(for: menuItem.element, stoppingAt: menu)
+            let action = try performMenuItemAction(on: menuItem)
+
+            let response = MenuBarChildPressResponse(
+                application: windowListApplication(for: catalog.application),
+                item: menuBarItemEntry(for: item),
+                action: action,
+                menuItem: menuItemResponse,
+                ancestors: ancestors
+            )
+            return try encodeJSON(response)
+        } catch {
+            cancelMenu(menu)
+            throw error
+        }
     case .captureMenu:
         let item = try selectMenuBarItem(from: catalog, using: command.selection)
         let surface = try openMenuBarSurface(for: item, application: catalog.application)
@@ -2947,6 +3004,66 @@ private func formatMenuBarCandidate(_ item: MenuBarCatalogItem) -> String {
     return "[\(item.index)] \(item.source) \(role)\(subrole)\(title)\(description)\(identifier)\(frame)"
 }
 
+private func selectMenuChildItem(
+    in menu: AXUIElement,
+    matching selection: MenuChildSelection
+) throws -> AccessibilityElementCandidate {
+    let candidates = collectAccessibilityElementCandidates(in: menu, depthRemaining: 8, childLimit: 120)
+        .filter { candidate in
+            normalizedSelectorText(candidate.role) == normalizedSelectorText(kAXMenuItemRole as String) &&
+            candidate.actions.contains { action in
+                normalizedSelectorText(action) == normalizedSelectorText(kAXPressAction as String) ||
+                normalizedSelectorText(action) == normalizedSelectorText(kAXPickAction as String)
+            }
+        }
+
+    let exactMatches = candidates.filter { candidate in
+        menuChildSearchTexts(for: candidate).contains { text in
+            normalizedSelectorText(text) == normalizedSelectorText(selection.query)
+        }
+    }
+
+    let partialMatches = candidates.filter { candidate in
+        menuChildSearchTexts(for: candidate).contains { text in
+            guard
+                let normalizedText = normalizedSelectorText(text),
+                let normalizedQuery = normalizedSelectorText(selection.query)
+            else {
+                return false
+            }
+            return normalizedText.contains(normalizedQuery)
+        }
+    }
+    let matches = exactMatches.isEmpty ? partialMatches : exactMatches
+
+    guard !matches.isEmpty else {
+        let suggestions = candidates
+            .prefix(8)
+            .map(formatAccessibilityCandidate)
+            .joined(separator: ", ")
+        let suffix = suggestions.isEmpty ? "" : " Candidates: \(suggestions)"
+        throw RegionShotError.accessibilityQueryFailed("No visible child menu item matching `\(selection.query)` was found after opening the selected menu-bar item.\(suffix)")
+    }
+
+    guard matches.count == 1, let match = matches.first else {
+        let suggestions = matches
+            .prefix(8)
+            .map(formatAccessibilityCandidate)
+            .joined(separator: ", ")
+        throw RegionShotError.accessibilityQueryFailed("More than one child menu item matches `\(selection.query)`: \(suggestions)")
+    }
+
+    return match
+}
+
+private func menuChildSearchTexts(for candidate: AccessibilityElementCandidate) -> [String] {
+    [
+        candidate.title,
+        candidate.description,
+        candidate.identifier,
+    ].compactMap { $0 }
+}
+
 private func buildVisibleWindowCatalog(selector: ApplicationSelector) throws -> VisibleWindowCatalog {
     let runningApplication = try resolveAutomationApplication(selector: selector)
     let windows = visibleWindows(
@@ -2979,7 +3096,8 @@ func visibleWindows(
     snapshots
         .filter { snapshot in
             snapshot.ownerPID == processID &&
-            snapshot.layer == 0 &&
+            snapshot.layer >= 0 &&
+            snapshot.layer <= maximumVisibleAppWindowLayer &&
             snapshot.alpha > 0 &&
             !snapshot.bounds.isEmpty
         }
@@ -4066,6 +4184,21 @@ private func captureRegion(
     return region
 }
 
+private func performMenuItemAction(on candidate: AccessibilityElementCandidate) throws -> String {
+    for action in [kAXPressAction as String, kAXPickAction as String] {
+        guard supportsAXAction(candidate.element, action: action) else {
+            continue
+        }
+
+        let error = AXUIElementPerformAction(candidate.element, action as CFString)
+        if error == .success {
+            return action
+        }
+    }
+
+    throw RegionShotError.accessibilityQueryFailed("Failed to press child menu item \(formatAccessibilityCandidate(candidate)); tried `AXPress` and `AXPick`.")
+}
+
 private func performPress(on element: AXUIElement) throws {
     let error = AXUIElementPerformAction(element, kAXPressAction as CFString)
     guard error == .success else {
@@ -4225,12 +4358,14 @@ private final class TimeoutRaceState<T: Sendable>: @unchecked Sendable {
     private var completed = false
     private var operationTask: Task<Void, Never>?
     private var timeoutTask: Task<Void, Never>?
+    private var cancelLateOperationTask = false
+    private var cancelLateTimeoutTask = false
 
     func setOperationTask(_ task: Task<Void, Never>) {
         let shouldCancel: Bool
         lock.lock()
         if completed {
-            shouldCancel = true
+            shouldCancel = cancelLateOperationTask
         } else {
             operationTask = task
             shouldCancel = false
@@ -4246,7 +4381,7 @@ private final class TimeoutRaceState<T: Sendable>: @unchecked Sendable {
         let shouldCancel: Bool
         lock.lock()
         if completed {
-            shouldCancel = true
+            shouldCancel = cancelLateTimeoutTask
         } else {
             timeoutTask = task
             shouldCancel = false
@@ -4260,7 +4395,9 @@ private final class TimeoutRaceState<T: Sendable>: @unchecked Sendable {
 
     func complete(
         _ result: Result<T, Error>,
-        continuation: CheckedContinuation<T, Error>
+        continuation: CheckedContinuation<T, Error>,
+        cancelOperationTask: Bool,
+        cancelTimeoutTask: Bool
     ) {
         let operationTaskToCancel: Task<Void, Never>?
         let timeoutTaskToCancel: Task<Void, Never>?
@@ -4272,8 +4409,10 @@ private final class TimeoutRaceState<T: Sendable>: @unchecked Sendable {
         }
 
         completed = true
-        operationTaskToCancel = operationTask
-        timeoutTaskToCancel = timeoutTask
+        cancelLateOperationTask = cancelOperationTask
+        cancelLateTimeoutTask = cancelTimeoutTask
+        operationTaskToCancel = cancelOperationTask ? operationTask : nil
+        timeoutTaskToCancel = cancelTimeoutTask ? timeoutTask : nil
         lock.unlock()
 
         operationTaskToCancel?.cancel()
@@ -4287,6 +4426,8 @@ private final class TimeoutRaceState<T: Sendable>: @unchecked Sendable {
 
         lock.lock()
         completed = true
+        cancelLateOperationTask = true
+        cancelLateTimeoutTask = true
         operationTaskToCancel = operationTask
         timeoutTaskToCancel = timeoutTask
         lock.unlock()
@@ -4309,9 +4450,19 @@ func withTimeout<T: Sendable>(
             let operationTask = Task {
                 do {
                     let value = try await operation()
-                    state.complete(.success(value), continuation: continuation)
+                    state.complete(
+                        .success(value),
+                        continuation: continuation,
+                        cancelOperationTask: false,
+                        cancelTimeoutTask: true
+                    )
                 } catch {
-                    state.complete(.failure(error), continuation: continuation)
+                    state.complete(
+                        .failure(error),
+                        continuation: continuation,
+                        cancelOperationTask: false,
+                        cancelTimeoutTask: true
+                    )
                 }
             }
             state.setOperationTask(operationTask)
@@ -4325,7 +4476,9 @@ func withTimeout<T: Sendable>(
 
                 state.complete(
                     .failure(RegionShotError.operationTimedOut(timeoutMessage())),
-                    continuation: continuation
+                    continuation: continuation,
+                    cancelOperationTask: false,
+                    cancelTimeoutTask: false
                 )
             }
             state.setTimeoutTask(timeoutTask)
