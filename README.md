@@ -67,7 +67,10 @@ For the full command guide, see [docs/usage.md](docs/usage.md).
 Requirements:
 
 - macOS 13 or newer
-- Swift tools 6.2 or newer
+- Swift tools 6.4 or newer to build
+
+The Swift tools requirement is build-time only. The binary still targets macOS
+13 or newer.
 
 Build and install:
 
