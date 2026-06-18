@@ -170,6 +170,30 @@ regionshot --app "System Settings" --list-visible-windows
 regionshot --app "System Settings" --visible-window --output ~/Desktop/window.png
 ```
 
+## Accessibility Windows
+
+```bash
+regionshot --app "Terminal" --list-accessibility-windows
+regionshot --app "Terminal" --window-index 0 --raise-window
+regionshot --app "Terminal" --window-name "server logs" --raise-window
+regionshot --app "Terminal" --window-name "server logs" --raise
+```
+
+`--list-accessibility-windows` lists windows through Accessibility instead of
+ScreenCaptureKit. The JSON includes each window's title, frame, supported AX
+actions, `isFocused`, `isMain`, `isFrontmostApplication`, and
+`isFrontmostWindow`.
+
+`isFrontmostWindow` means the selected app is the current
+`NSWorkspace.frontmostApplication`, and the window is that app's focused AX
+window. If the app exposes no focused AX window, RegionShot falls back to the
+main window, then index 0.
+
+`--raise-window` activates the app and performs `AXRaise` on the selected AX
+window. Select the window with `--window-index`, `--window-name`, or
+`--frontmost-window`; if you omit a selector, RegionShot uses the same focused,
+main, then first-window fallback as other Accessibility modes.
+
 ## Permissions
 
 Capture and app/window listing require Screen Recording permission for the host

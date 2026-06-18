@@ -239,10 +239,12 @@ enum WindowSelection: Sendable {
 }
 
 enum AccessibilityMode: Sendable {
+    case listWindows
     case listElements
     case elementAt(WindowPoint)
     case pressAt(WindowPoint)
     case pressElement(AccessibilitySelector)
+    case raiseWindow
 }
 
 enum MenuBarMode: Sendable {
@@ -306,6 +308,8 @@ struct VisibleCatalogWindow {
 
 private struct AccessibilityWindowCatalog {
     let application: AutomationApplication
+    let frontmostApplication: AutomationApplication?
+    let isFrontmostApplication: Bool
     let windows: [AccessibilityCatalogWindow]
 }
 
@@ -320,6 +324,9 @@ private struct AccessibilityCatalogWindow {
     let frame: CGRect
     let isFocused: Bool
     let isMain: Bool
+    let isFrontmostApplication: Bool
+    let isFrontmostWindow: Bool
+    let actions: [String]
     let element: AXUIElement
 }
 
@@ -427,6 +434,13 @@ private struct AccessibilityTreeResponse: Encodable {
     let tree: AccessibilityElementResponse
 }
 
+private struct AccessibilityWindowListResponse: Encodable {
+    let application: WindowListApplication
+    let frontmostApplication: WindowListApplication?
+    let frontnessSemantics: String
+    let windows: [AccessibilityWindowEntry]
+}
+
 private struct AccessibilityHitResponse: Encodable {
     let application: WindowListApplication
     let window: AccessibilityWindowEntry
@@ -457,12 +471,23 @@ private struct AccessibilityPressResponse: Encodable {
     let ancestors: [AccessibilityElementResponse]
 }
 
+private struct AccessibilityRaiseWindowResponse: Encodable {
+    let application: WindowListApplication
+    let frontmostApplication: WindowListApplication?
+    let window: AccessibilityWindowEntry
+    let action: String
+    let activationRequestAccepted: Bool
+}
+
 private struct AccessibilityWindowEntry: Encodable {
     let index: Int
     let title: String?
     let frame: JSONRect
     let isFocused: Bool
     let isMain: Bool
+    let isFrontmostApplication: Bool
+    let isFrontmostWindow: Bool
+    let actions: [String]
 }
 
 private struct AccessibilityElementResponse: Encodable {
@@ -649,6 +674,8 @@ Forms:
   regionshot --app APP --window-name TITLE [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS]
   regionshot --app APP --list-visible-windows
   regionshot --app APP --visible-window [--window-index N | --window-name TITLE | --frontmost-window] [--window-crop X,Y,W,H] [--output FILE]
+  regionshot --app APP --list-accessibility-windows
+  regionshot --app APP --raise-window [--window-index N | --window-name TITLE | --frontmost-window]
   regionshot --app APP --list-menu-bar-items
   regionshot --app APP --capture-menu [--output FILE]
   regionshot --app APP --menu-bar-index N --press
@@ -686,6 +713,8 @@ Rules:
   window list JSON includes frontmost-first indices, titles, and bounds
   `--visible-window` uses visible pixels from the current screen, including floating panels; occluding windows are included
   `--list-visible-windows` and `--visible-window` use CGWindowList and do not depend on ScreenCaptureKit window capture
+  `--list-accessibility-windows` lists AX windows, supported actions, focused/main state, and whether the app/window is frontmost
+  `--raise-window` (alias: `--raise`) activates the app and performs `AXRaise` on the selected AX window
   ScreenCaptureKit app/window operations time out after 5 seconds by default; use `--timeout SECONDS` to adjust
   menu-bar item list JSON includes status-item/app-menu indices, roles, actions, and bounds
   `--capture-menu` opens the selected menu-bar item, captures the visible menu or popover, and closes it
@@ -1017,10 +1046,13 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     let wantsCaptureMenu = parsed.flags.contains("--capture-menu")
     let pressMenuItemQuery = normalizedArgumentValue(parsed.values["--press-menu-item"])
     let menuBarSelection = try parseMenuBarSelection(parsed)
+    let wantsAccessibilityWindowList = parsed.flags.contains("--list-accessibility-windows") ||
+        parsed.flags.contains("--list-ax-windows")
     let wantsElementList = parsed.flags.contains("--list-elements")
     let wantsPress = parsed.flags.contains("--press") || parsed.flags.contains("--press-element")
     let wantsMenuBarPress = wantsPress && menuBarSelection != nil
     let wantsAccessibilityPress = wantsPress && !wantsMenuBarPress
+    let wantsRaiseWindow = parsed.flags.contains("--raise-window") || parsed.flags.contains("--raise")
     let elementPoint = try parseWindowPoint(parsed.values["--element-at"], flag: "--element-at")
     let pressPoint = try parseWindowPoint(parsed.values["--press-at"], flag: "--press-at")
     let selector = parseAccessibilitySelector(from: parsed.values)
@@ -1097,14 +1129,16 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     }
 
     let accessibilityModeCount = [
+        wantsAccessibilityWindowList ? 1 : 0,
         wantsElementList ? 1 : 0,
         elementPoint != nil ? 1 : 0,
         wantsAccessibilityPress ? 1 : 0,
         pressPoint != nil ? 1 : 0,
+        wantsRaiseWindow ? 1 : 0,
     ].reduce(0, +)
 
     if accessibilityModeCount > 1 {
-        throw RegionShotError.invalidArguments("Choose only one of `--list-elements`, `--element-at`, `--press`/`--press-element`, or `--press-at`.")
+        throw RegionShotError.invalidArguments("Choose only one of `--list-accessibility-windows`, `--list-elements`, `--element-at`, `--press`/`--press-element`, `--press-at`, or `--raise-window`.")
     }
 
     let menuBarModeCount = [
@@ -1128,7 +1162,9 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     }
 
     let accessibilityMode: AccessibilityMode?
-    if wantsElementList {
+    if wantsAccessibilityWindowList {
+        accessibilityMode = .listWindows
+    } else if wantsElementList {
         accessibilityMode = .listElements
     } else if let elementPoint {
         accessibilityMode = .elementAt(elementPoint)
@@ -1136,6 +1172,8 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         accessibilityMode = .pressElement(selector)
     } else if let pressPoint {
         accessibilityMode = .pressAt(pressPoint)
+    } else if wantsRaiseWindow {
+        accessibilityMode = .raiseWindow
     } else {
         accessibilityMode = nil
     }
@@ -1179,6 +1217,10 @@ func parse(arguments: [String]) throws -> CommandBehavior {
 
     if accessibilityMode != nil, applicationSelector == nil {
         throw RegionShotError.invalidArguments("Accessibility inspection and actions require `--app <name-or-pid>`.")
+    }
+
+    if wantsAccessibilityWindowList, windowSelection != nil {
+        throw RegionShotError.invalidArguments("`--list-accessibility-windows` cannot be combined with `--frontmost-window`, `--window-index`, or `--window-name`.")
     }
 
     if wantsWindowList, windowSelection != nil {
@@ -1435,7 +1477,7 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         let argument = arguments[index]
 
         switch argument {
-        case "--help", "-h", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-elements", "--list-menu-bar-items", "--press", "--press-element", "--capture-menu", "--ascii-invert", "--ascii-no-ocr":
+        case "--help", "-h", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--press", "--press-element", "--raise-window", "--raise", "--capture-menu", "--ascii-invert", "--ascii-no-ocr":
             flags.insert(argument)
             index += 1
         case "--x", "--y", "--width", "--height", "--output", "--app", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style":
@@ -1812,10 +1854,6 @@ private func listWindows(using command: ListWindowsCommand) async throws -> Stri
 }
 
 private func inspectAccessibility(using command: AccessibilityCommand) async throws -> String {
-    guard #available(macOS 14.0, *) else {
-        throw RegionShotError.unsupportedFeature("Element inspection currently requires macOS 14 or newer.")
-    }
-
     try ensureAccessibilityAccess(prompt: true)
 
     let catalog = try buildAccessibilityWindowCatalog(selector: command.applicationSelector)
@@ -1823,6 +1861,14 @@ private func inspectAccessibility(using command: AccessibilityCommand) async thr
     let accessibilityWindow = selectedWindow.element
 
     switch command.mode {
+    case .listWindows:
+        let response = AccessibilityWindowListResponse(
+            application: windowListApplication(for: catalog.application),
+            frontmostApplication: catalog.frontmostApplication.map(windowListApplication(for:)),
+            frontnessSemantics: "AX-focused/main window of NSWorkspace frontmost application",
+            windows: catalog.windows.map(accessibilityWindowEntry(for:))
+        )
+        return try encodeJSON(response)
     case .listElements:
         let response = AccessibilityTreeResponse(
             application: windowListApplication(for: catalog.application),
@@ -1914,6 +1960,21 @@ private func inspectAccessibility(using command: AccessibilityCommand) async thr
             matched: accessibilityElementResponse(for: pressableElement.element, depthRemaining: 1),
             pressed: accessibilityElementResponse(for: pressableElement.element, depthRemaining: 1),
             ancestors: accessibilityAncestorResponses(for: pressableElement.element, stoppingAt: accessibilityWindow)
+        )
+        return try encodeJSON(response)
+    case .raiseWindow:
+        let activationRequestAccepted = activateApplication(catalog.application)
+        try performRaise(on: accessibilityWindow)
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        let refreshedCatalog = try buildAccessibilityWindowCatalog(selector: command.applicationSelector)
+        let refreshedWindow = try selectAccessibilityWindow(from: refreshedCatalog, using: command.windowSelection)
+        let response = AccessibilityRaiseWindowResponse(
+            application: windowListApplication(for: refreshedCatalog.application),
+            frontmostApplication: refreshedCatalog.frontmostApplication.map(windowListApplication(for:)),
+            window: accessibilityWindowEntry(for: refreshedWindow),
+            action: kAXRaiseAction as String,
+            activationRequestAccepted: activationRequestAccepted
         )
         return try encodeJSON(response)
     }
@@ -2805,7 +2866,10 @@ private func accessibilityWindowEntry(for window: AccessibilityCatalogWindow) ->
         title: normalizedTitle(window.title),
         frame: JSONRect(window.frame),
         isFocused: window.isFocused,
-        isMain: window.isMain
+        isMain: window.isMain,
+        isFrontmostApplication: window.isFrontmostApplication,
+        isFrontmostWindow: window.isFrontmostWindow,
+        actions: window.actions
     )
 }
 
@@ -3196,12 +3260,14 @@ private func captureRegion(
 
 private func buildAccessibilityWindowCatalog(selector: ApplicationSelector) throws -> AccessibilityWindowCatalog {
     let runningApplication = try resolveAutomationApplication(selector: selector)
+    let frontmostApplication = NSWorkspace.shared.frontmostApplication.map(automationApplication(from:))
+    let isFrontmostApplication = frontmostApplication?.processID == runningApplication.processID
     let applicationElement = AXUIElementCreateApplication(runningApplication.processID)
     let focusedWindow = copyAXElement(from: applicationElement, attribute: kAXFocusedWindowAttribute as CFString)
     let mainWindow = copyAXElement(from: applicationElement, attribute: kAXMainWindowAttribute as CFString)
     let rawWindows = copyAXElements(from: applicationElement, attribute: kAXWindowsAttribute as CFString)
 
-    let windows = rawWindows
+    let sortedWindows = rawWindows
         .compactMap { element -> AccessibilityCatalogWindow? in
             guard let frame = copyAXFrame(from: element), !frame.isEmpty else {
                 return nil
@@ -3213,10 +3279,18 @@ private func buildAccessibilityWindowCatalog(selector: ApplicationSelector) thro
                 frame: frame,
                 isFocused: focusedWindow.map { CFEqual($0, element) } ?? false,
                 isMain: mainWindow.map { CFEqual($0, element) } ?? false,
+                isFrontmostApplication: isFrontmostApplication,
+                isFrontmostWindow: false,
+                actions: copyAXActions(from: element),
                 element: element
             )
         }
         .sorted(by: accessibilityWindowSort)
+
+    let hasFocusedWindow = sortedWindows.contains(where: \.isFocused)
+    let hasMainWindow = sortedWindows.contains(where: \.isMain)
+
+    let windows = sortedWindows
         .enumerated()
         .map { offset, window in
             AccessibilityCatalogWindow(
@@ -3225,6 +3299,15 @@ private func buildAccessibilityWindowCatalog(selector: ApplicationSelector) thro
                 frame: window.frame,
                 isFocused: window.isFocused,
                 isMain: window.isMain,
+                isFrontmostApplication: isFrontmostApplication,
+                isFrontmostWindow: isFrontmostAccessibilityWindow(
+                    window: window,
+                    index: offset,
+                    isFrontmostApplication: isFrontmostApplication,
+                    hasFocusedWindow: hasFocusedWindow,
+                    hasMainWindow: hasMainWindow
+                ),
+                actions: window.actions,
                 element: window.element
             )
         }
@@ -3243,8 +3326,32 @@ private func buildAccessibilityWindowCatalog(selector: ApplicationSelector) thro
 
     return AccessibilityWindowCatalog(
         application: runningApplication,
+        frontmostApplication: frontmostApplication,
+        isFrontmostApplication: isFrontmostApplication,
         windows: windows
     )
+}
+
+private func isFrontmostAccessibilityWindow(
+    window: AccessibilityCatalogWindow,
+    index: Int,
+    isFrontmostApplication: Bool,
+    hasFocusedWindow: Bool,
+    hasMainWindow: Bool
+) -> Bool {
+    guard isFrontmostApplication else {
+        return false
+    }
+
+    if hasFocusedWindow {
+        return window.isFocused
+    }
+
+    if hasMainWindow {
+        return window.isMain
+    }
+
+    return index == 0
 }
 
 private func resolveAutomationApplication(selector: ApplicationSelector) throws -> AutomationApplication {
@@ -4219,6 +4326,29 @@ private func performPress(on element: AXUIElement) throws {
     }
 }
 
+private func activateApplication(_ application: AutomationApplication) -> Bool {
+    guard let runningApplication = NSRunningApplication(processIdentifier: application.processID) else {
+        return false
+    }
+
+    if #available(macOS 14.0, *) {
+        return runningApplication.activate(from: .current, options: [])
+    }
+
+    return runningApplication.activate(options: [])
+}
+
+private func performRaise(on element: AXUIElement) throws {
+    guard supportsAXAction(element, action: kAXRaiseAction as String) else {
+        throw RegionShotError.accessibilityQueryFailed("Selected window \(formatAXElement(element)) does not support `AXRaise`.")
+    }
+
+    let error = AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+    guard error == .success else {
+        throw RegionShotError.accessibilityQueryFailed("Failed to perform `AXRaise` on \(formatAXElement(element)) (AX error \(error.rawValue)).")
+    }
+}
+
 private func supportsAXAction(_ element: AXUIElement, action: String) -> Bool {
     let normalizedAction = normalizedSelectorText(action)
     return copyAXActions(from: element).contains { candidate in
@@ -4249,6 +4379,22 @@ private func describe(selector: AccessibilitySelector) -> String {
     ].compactMap { $0 }
 
     return parts.joined(separator: ", ")
+}
+
+private func formatAXElement(_ element: AXUIElement) -> String {
+    formatAccessibilityCandidate(
+        AccessibilityElementCandidate(
+            element: element,
+            depth: 0,
+            role: copyAXString(from: element, attribute: kAXRoleAttribute as CFString),
+            subrole: copyAXString(from: element, attribute: kAXSubroleAttribute as CFString),
+            title: normalizedTitle(copyAXString(from: element, attribute: kAXTitleAttribute as CFString)),
+            description: normalizedTitle(copyAXString(from: element, attribute: kAXDescriptionAttribute as CFString)),
+            identifier: normalizedTitle(copyAXString(from: element, attribute: kAXIdentifierAttribute as CFString)),
+            frame: copyAXFrame(from: element),
+            actions: copyAXActions(from: element)
+        )
+    )
 }
 
 private func formatAccessibilityCandidate(_ candidate: AccessibilityElementCandidate) -> String {

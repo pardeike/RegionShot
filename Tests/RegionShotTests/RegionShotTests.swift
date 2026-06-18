@@ -94,6 +94,87 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(command.screenCaptureTimeout, 0.25, accuracy: 0.001)
     }
 
+    func testAccessibilityWindowListParsing() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--list-accessibility-windows",
+        ])
+
+        guard case .inspectAccessibility(let command) = behavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .name(let name) = command.applicationSelector else {
+            return XCTFail("Expected name application selector.")
+        }
+
+        guard case .listWindows = command.mode else {
+            return XCTFail("Expected accessibility window list mode.")
+        }
+
+        XCTAssertEqual(name, "Terminal")
+        XCTAssertNil(command.windowSelection)
+    }
+
+    func testAccessibilityWindowListAliasParsing() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--list-ax-windows",
+        ])
+
+        guard case .inspectAccessibility(let command) = behavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .listWindows = command.mode else {
+            return XCTFail("Expected accessibility window list mode.")
+        }
+    }
+
+    func testRaiseWindowParsingWithIndex() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--window-index", "2",
+            "--raise-window",
+        ])
+
+        guard case .inspectAccessibility(let command) = behavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .index(let index) = command.windowSelection else {
+            return XCTFail("Expected window index selection.")
+        }
+
+        guard case .raiseWindow = command.mode else {
+            return XCTFail("Expected raise-window mode.")
+        }
+
+        XCTAssertEqual(index, 2)
+    }
+
+    func testRaiseWindowAliasParsingWithName() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--window-name", "server logs",
+            "--raise",
+        ])
+
+        guard case .inspectAccessibility(let command) = behavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .name(let name) = command.windowSelection else {
+            return XCTFail("Expected window-name selection.")
+        }
+
+        guard case .raiseWindow = command.mode else {
+            return XCTFail("Expected raise-window mode.")
+        }
+
+        XCTAssertEqual(name, "server logs")
+    }
+
     func testAsciiArtRejectsMixedModes() {
         XCTAssertThrowsError(
             try parse(arguments: ["--ascii", "/tmp/screenshot.png", "--app", "Terminal"])
@@ -171,6 +252,31 @@ final class RegionShotTests: XCTestCase {
             ])
         ) { error in
             XCTAssertTrue(String(describing: error).contains("--press-menu-item"))
+        }
+    }
+
+    func testAccessibilityWindowListRejectsWindowSelection() {
+        XCTAssertThrowsError(
+            try parse(arguments: [
+                "--app", "Terminal",
+                "--window-index", "0",
+                "--list-accessibility-windows",
+            ])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--list-accessibility-windows"))
+        }
+    }
+
+    func testRaiseWindowRejectsOutput() {
+        XCTAssertThrowsError(
+            try parse(arguments: [
+                "--app", "Terminal",
+                "--window-index", "0",
+                "--raise-window",
+                "--output", "/tmp/window.png",
+            ])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("Accessibility inspection and actions"))
         }
     }
 

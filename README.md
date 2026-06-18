@@ -9,6 +9,7 @@ thing instead of guessing screen rectangles:
 - find a running app
 - list app windows
 - capture a window or a visible floating panel
+- list and raise accessibility windows
 - open and capture a menu-bar item
 - press a known menu item or accessibility button
 - convert a screenshot to a compact text view
@@ -51,6 +52,8 @@ again.
 ```bash
 regionshot 0 0 800 600
 regionshot --find-app Terminal
+regionshot --app Terminal --list-accessibility-windows
+regionshot --app Terminal --window-index 0 --raise-window
 regionshot --app Terminal --list-visible-windows
 regionshot --app Terminal --visible-window --output ~/Desktop/terminal.png
 regionshot --app Drafty --list-menu-bar-items
