@@ -305,6 +305,7 @@ enum AccessibilityMode: Sendable {
     case pressElement(AccessibilitySelector)
     case raiseWindow
     case closeWindow
+    case minimizeWindow
 }
 
 enum MenuBarMode: Sendable {
@@ -631,6 +632,13 @@ private struct AccessibilityCloseWindowResponse: Encodable {
     let target: AccessibilityElementResponse
 }
 
+private struct AccessibilityMinimizeWindowResponse: Encodable {
+    let application: WindowListApplication
+    let window: AccessibilityWindowEntry
+    let action: String
+    let target: AccessibilityElementResponse
+}
+
 private struct AccessibilityWindowEntry: Encodable {
     let index: Int
     let title: String?
@@ -853,6 +861,7 @@ Forms:
   regionshot --app APP --list-accessibility-windows
   regionshot --app APP --raise-window [--window-index N | --window-name TITLE | --frontmost-window]
   regionshot --app APP --close-window [--window-index N | --window-name TITLE | --frontmost-window]
+  regionshot --app APP --minimize-window [--window-index N | --window-name TITLE | --frontmost-window]
   regionshot --app APP --list-menu-bar-items
   regionshot --app APP --capture-menu [--output FILE]
   regionshot --app APP --menu-bar-index N --press
@@ -914,6 +923,7 @@ Rules:
   `--list-accessibility-windows` lists AX windows, supported actions, focused/main state, and whether the app/window is frontmost
   `--raise-window` (alias: `--raise`) activates the app and performs `AXRaise` on the selected AX window
   `--close-window` presses the selected AX window's close button
+  `--minimize-window` presses the selected AX window's minimize button
   ScreenCaptureKit app/window operations time out after 5 seconds by default; use `--timeout SECONDS` to adjust
   menu-bar item list JSON includes status-item/app-menu indices, roles, actions, and bounds
   `--capture-menu` opens the selected menu-bar item, captures the visible menu or popover, and closes it
@@ -1565,6 +1575,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     let wantsAccessibilityPress = wantsPress && !wantsMenuBarPress
     let wantsRaiseWindow = parsed.flags.contains("--raise-window") || parsed.flags.contains("--raise")
     let wantsCloseWindow = parsed.flags.contains("--close-window")
+    let wantsMinimizeWindow = parsed.flags.contains("--minimize-window")
     let elementPoint = try parseWindowPoint(parsed.values["--element-at"], flag: "--element-at")
     let pressPoint = try parseWindowPoint(parsed.values["--press-at"], flag: "--press-at")
     let selector = parseAccessibilitySelector(from: parsed.values)
@@ -1661,10 +1672,11 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         pressPoint != nil ? 1 : 0,
         wantsRaiseWindow ? 1 : 0,
         wantsCloseWindow ? 1 : 0,
+        wantsMinimizeWindow ? 1 : 0,
     ].reduce(0, +)
 
     if accessibilityModeCount > 1 {
-        throw RegionShotError.invalidArguments("Choose only one of `--list-accessibility-windows`, `--list-elements`, `--element-at`, `--get`/`--get-element`, `--wait-for-element`, `--set-value`, `--press`/`--press-element`, `--press-at`, `--raise-window`, or `--close-window`.")
+        throw RegionShotError.invalidArguments("Choose only one of `--list-accessibility-windows`, `--list-elements`, `--element-at`, `--get`/`--get-element`, `--wait-for-element`, `--set-value`, `--press`/`--press-element`, `--press-at`, `--raise-window`, `--close-window`, or `--minimize-window`.")
     }
 
     let menuBarModeCount = [
@@ -1708,6 +1720,8 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         accessibilityMode = .raiseWindow
     } else if wantsCloseWindow {
         accessibilityMode = .closeWindow
+    } else if wantsMinimizeWindow {
+        accessibilityMode = .minimizeWindow
     } else {
         accessibilityMode = nil
     }
@@ -2030,7 +2044,7 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         let argument = arguments[index]
 
         switch argument {
-        case "--help", "-h", "--version", "--doctor", "--list-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--get", "--get-element", "--wait-for-element", "--press", "--press-element", "--raise-window", "--raise", "--close-window", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only":
+        case "--help", "-h", "--version", "--doctor", "--list-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--get", "--get-element", "--wait-for-element", "--press", "--press-element", "--raise-window", "--raise", "--close-window", "--minimize-window", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only":
             flags.insert(argument)
             index += 1
         case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--set-value", "--depth", "--max-children", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
@@ -2748,6 +2762,19 @@ private func inspectAccessibility(using command: AccessibilityCommand) async thr
             window: accessibilityWindowEntry(for: selectedWindow),
             action: kAXPressAction as String,
             target: accessibilityElementResponse(for: closeButton, depthRemaining: 1)
+        )
+        return try encodeJSON(response)
+    case .minimizeWindow:
+        guard let minimizeButton = copyAXElement(from: accessibilityWindow, attribute: kAXMinimizeButtonAttribute as CFString) else {
+            throw RegionShotError.accessibilityQueryFailed("Selected window \(formatAXElement(accessibilityWindow)) does not expose an `AXMinimizeButton`.")
+        }
+
+        try performPress(on: minimizeButton)
+        let response = AccessibilityMinimizeWindowResponse(
+            application: windowListApplication(for: catalog.application),
+            window: accessibilityWindowEntry(for: selectedWindow),
+            action: kAXPressAction as String,
+            target: accessibilityElementResponse(for: minimizeButton, depthRemaining: 1)
         )
         return try encodeJSON(response)
     }

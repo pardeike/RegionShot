@@ -780,6 +780,37 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
+    func testMinimizeWindowParsingWithIndex() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--window-index", "1",
+            "--minimize-window",
+        ])
+
+        guard case .inspectAccessibility(let command) = behavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .index(let index) = command.windowSelection else {
+            return XCTFail("Expected window-index selection.")
+        }
+
+        guard case .minimizeWindow = command.mode else {
+            return XCTFail("Expected minimize-window mode.")
+        }
+
+        XCTAssertEqual(index, 1)
+    }
+
+    func testMinimizeWindowRejectsMixedAccessibilityMode() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--minimize-window", "--close-window"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--minimize-window"))
+            XCTAssertTrue(String(describing: error).contains("--close-window"))
+        }
+    }
+
     func testAsciiArtRejectsMixedModes() {
         XCTAssertThrowsError(
             try parse(arguments: ["--ascii", "/tmp/screenshot.png", "--app", "Terminal"])
