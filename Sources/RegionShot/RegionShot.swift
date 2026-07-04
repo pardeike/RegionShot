@@ -173,6 +173,7 @@ struct CaptureCommand: Sendable {
     let screenCaptureTimeout: TimeInterval
     let rawOutput: Bool
     let textOutput: CaptureTextOptions?
+    let imageOutput: ImageOutputOptions
 }
 
 struct FindAppsCommand: Sendable {
@@ -212,6 +213,7 @@ struct VisibleWindowCaptureCommand: Sendable {
     let screenCaptureTimeout: TimeInterval
     let rawOutput: Bool
     let textOutput: CaptureTextOptions?
+    let imageOutput: ImageOutputOptions
 }
 
 struct AccessibilityCommand: Sendable {
@@ -234,6 +236,7 @@ struct MenuBarCommand: Sendable {
     let screenCaptureTimeout: TimeInterval
     let rawOutput: Bool
     let textOutput: CaptureTextOptions?
+    let imageOutput: ImageOutputOptions
 }
 
 struct MenuChildSelection: Sendable {
@@ -248,6 +251,44 @@ struct CaptureTextOptions: Sendable {
     let invert: Bool
     let includeOCR: Bool
     let recognitionLanguages: [String]
+}
+
+struct ImageOutputOptions: Sendable {
+    let format: ImageOutputFormat
+    let jpegQuality: Double
+    let maxDimension: Int?
+}
+
+enum ImageOutputFormat: String, Sendable {
+    case png
+    case jpeg
+
+    var fileExtension: String {
+        switch self {
+        case .png:
+            return "png"
+        case .jpeg:
+            return "jpg"
+        }
+    }
+
+    var typeIdentifier: String {
+        switch self {
+        case .png:
+            return UTType.png.identifier
+        case .jpeg:
+            return UTType.jpeg.identifier
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .png:
+            return "PNG"
+        case .jpeg:
+            return "JPEG"
+        }
+    }
 }
 
 struct AccessibilitySelector: Sendable {
@@ -1192,6 +1233,8 @@ private let defaultToneAsciiWidth = 120
 private let defaultToneAsciiMaxHeight = 80
 private let asciiWidthRange = 16...240
 private let asciiMaxHeightRange = 8...240
+private let defaultImageOutputOptions = ImageOutputOptions(format: .png, jpegQuality: 0.8, maxDimension: nil)
+private let imageMaxDimensionRange = 16...16384
 private let maximumVisibleAppWindowLayer = 10
 private let defaultAccessibilityTreeDepth = 4
 private let defaultAccessibilityTreeChildLimit = 25
@@ -1203,10 +1246,10 @@ regionshot = macOS screenshot wrapper around native `ScreenCaptureKit`.
 
 Output:
   success -> compact JSON envelope on stdout: {"ok":true,"mode":"...","version":"..."}
-  capture/menu-capture -> writes a PNG file and returns the path as `output`
+  capture/menu-capture -> writes an image file and returns the path as `output`
   inspect/action modes -> return their mode-specific payload as `data`
   ascii report mode -> returns layout ASCII and OCR text as `report`
-  add `--with-ascii` or `--with-ocr` to capture forms to include text from the written PNG
+  add `--with-ascii` or `--with-ocr` to capture forms to include text from the written image
   errors -> compact JSON envelope on stderr with `error.kind`, `message`, and `exitCode`
   add `--raw` to capture, menu-capture, or ascii forms for legacy bare path/report output
 
@@ -1220,16 +1263,16 @@ Forms:
   regionshot --find-app TEXT
   regionshot --list-displays
   regionshot --ascii IMAGE [--ascii-style layout|tone] [--ascii-width N] [--ascii-max-height N] [--ascii-language CODE[,CODE...]] [--ascii-invert] [--ascii-no-ocr] [--ocr-only] [--raw]
-  regionshot X Y WIDTH HEIGHT [--app APP] [--output FILE] [--with-ascii | --with-ocr] [--raw]
-  regionshot --x X --y Y --width WIDTH --height HEIGHT [--app APP] [--output FILE] [--with-ascii | --with-ocr] [--raw]
+  regionshot X Y WIDTH HEIGHT [--app APP] [--output FILE] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
+  regionshot --x X --y Y --width WIDTH --height HEIGHT [--app APP] [--output FILE] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
   regionshot --app APP [--timeout SECONDS]
   regionshot --pid PID [--timeout SECONDS]
   regionshot --app-name NAME [--timeout SECONDS]
-  regionshot --app APP --frontmost-window [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--with-ascii | --with-ocr] [--raw]
-  regionshot --app APP --window-index N [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--with-ascii | --with-ocr] [--raw]
-  regionshot --app APP --window-name TITLE [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--with-ascii | --with-ocr] [--raw]
+  regionshot --app APP --frontmost-window [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
+  regionshot --app APP --window-index N [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
+  regionshot --app APP --window-name TITLE [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
   regionshot --app APP --list-visible-windows
-  regionshot --app APP --visible-window [--window-index N | --window-name TITLE | --frontmost-window] [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--with-ascii | --with-ocr] [--raw]
+  regionshot --app APP --visible-window [--window-index N | --window-name TITLE | --frontmost-window] [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
   regionshot --app APP --list-accessibility-windows
   regionshot --app APP --raise-window [--window-index N | --window-name TITLE | --frontmost-window]
   regionshot --app APP --close-window [--window-index N | --window-name TITLE | --frontmost-window]
@@ -1237,13 +1280,13 @@ Forms:
   regionshot --app APP --move-window X,Y [--window-index N | --window-name TITLE | --frontmost-window]
   regionshot --app APP --resize-window W,H [--window-index N | --window-name TITLE | --frontmost-window]
   regionshot --app APP --list-menu-bar-items
-  regionshot --app APP --capture-menu [--output FILE] [--timeout SECONDS] [--with-ascii | --with-ocr] [--raw]
+  regionshot --app APP --capture-menu [--output FILE] [--timeout SECONDS] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
   regionshot --app APP --menu-bar-index N --press
   regionshot --app APP --menu-bar-index N --press-menu-item TEXT
-  regionshot --app APP --menu-bar-index N --capture-menu [--output FILE] [--timeout SECONDS] [--with-ascii | --with-ocr] [--raw]
+  regionshot --app APP --menu-bar-index N --capture-menu [--output FILE] [--timeout SECONDS] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
   regionshot --app APP --menu-bar-item TEXT --press
   regionshot --app APP --menu-bar-item TEXT --press-menu-item TEXT
-  regionshot --app APP --menu-bar-item TEXT --capture-menu [--output FILE] [--timeout SECONDS] [--with-ascii | --with-ocr] [--raw]
+  regionshot --app APP --menu-bar-item TEXT --capture-menu [--output FILE] [--timeout SECONDS] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
   regionshot --app APP --list-elements [--depth N] [--max-children N] [--roles ROLE[,ROLE...]] [--interactive] [--flat]
   regionshot --app APP --wait-for-window TITLE [--timeout SECONDS]
   regionshot --app APP --get --path PATH
@@ -1302,6 +1345,7 @@ Rules:
   `--ascii-invert` flips light/dark mapping for tone style; `--ascii-no-ocr` disables Vision text recognition
   `--ocr-only` returns OCR blocks without rendering the ASCII canvas
   `--with-ascii` appends the ASCII report to capture output; `--with-ocr` appends OCR blocks only
+  capture output defaults to PNG; use `--format jpeg`, `--quality 0.7`, or `--max-dimension N` for cheaper image output
   `--app` alone == inspect mode == same as `--list-windows`
   window list data includes frontmost-first indices, titles, and bounds
   `--visible-window` uses visible pixels from the current screen, including floating panels; occluding windows are included
@@ -2168,6 +2212,11 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     let wantsRawOutput = parsed.flags.contains("--raw")
     let wantsWithAscii = parsed.flags.contains("--with-ascii")
     let wantsWithOCR = parsed.flags.contains("--with-ocr")
+    let imageOutput = try parseImageOutputOptions(
+        formatValue: parsed.values["--format"],
+        qualityValue: parsed.values["--quality"],
+        maxDimensionValue: parsed.values["--max-dimension"]
+    )
     let asciiDefaultWidth = asciiStyle == .layout ? defaultLayoutAsciiWidth : defaultToneAsciiWidth
     let asciiDefaultMaxHeight = asciiStyle == .layout ? defaultLayoutAsciiMaxHeight : defaultToneAsciiMaxHeight
     let hasAsciiRenderOption = parsed.values["--ascii-width"] != nil ||
@@ -2178,6 +2227,9 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     let hasAsciiOption = hasAsciiRenderOption ||
         parsed.values["--ascii-language"] != nil ||
         wantsOCROnly
+    let hasImageOutputOption = parsed.values["--format"] != nil ||
+        parsed.values["--quality"] != nil ||
+        parsed.values["--max-dimension"] != nil
 
     if parsed.values["--find-app"] != nil, findAppQuery == nil {
         throw RegionShotError.invalidArguments("`--find-app` requires a non-empty search string.")
@@ -2392,6 +2444,14 @@ func parse(arguments: [String]) throws -> CommandBehavior {
 
     if (wantsWithAscii || wantsWithOCR), !captureTextIsSupported {
         throw RegionShotError.invalidArguments("`--with-ascii` and `--with-ocr` require a capture mode.")
+    }
+
+    if hasImageOutputOption, !captureTextIsSupported {
+        throw RegionShotError.invalidArguments("`--format`, `--quality`, and `--max-dimension` require a capture mode.")
+    }
+
+    if imageOutput.format != .jpeg, parsed.values["--quality"] != nil {
+        throw RegionShotError.invalidArguments("`--quality` requires `--format jpeg`.")
     }
 
     let captureTextOutput: CaptureTextOptions?
@@ -2622,10 +2682,11 @@ func parse(arguments: [String]) throws -> CommandBehavior {
                 applicationSelector: applicationSelector!,
                 selection: menuBarSelection,
                 mode: menuBarMode,
-                outputURL: wantsCaptureMenu ? try outputURL(from: outputPath) : nil,
+                outputURL: wantsCaptureMenu ? try outputURL(from: outputPath, format: imageOutput.format) : nil,
                 screenCaptureTimeout: screenCaptureTimeout,
                 rawOutput: wantsRawOutput,
-                textOutput: captureTextOutput
+                textOutput: captureTextOutput,
+                imageOutput: imageOutput
             )
         )
     }
@@ -2648,10 +2709,11 @@ func parse(arguments: [String]) throws -> CommandBehavior {
                 applicationSelector: applicationSelector!,
                 windowSelection: windowSelection,
                 windowCrop: windowCrop,
-                outputURL: try outputURL(from: outputPath),
+                outputURL: try outputURL(from: outputPath, format: imageOutput.format),
                 screenCaptureTimeout: screenCaptureTimeout,
                 rawOutput: wantsRawOutput,
-                textOutput: captureTextOutput
+                textOutput: captureTextOutput,
+                imageOutput: imageOutput
             )
         )
     }
@@ -2685,7 +2747,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         throw RegionShotError.invalidArguments("Missing rectangle arguments.")
     }
 
-    let outputURL = try outputURL(from: outputPath)
+    let outputURL = try outputURL(from: outputPath, format: imageOutput.format)
     return .capture(
         CaptureCommand(
             region: parsed.region,
@@ -2695,7 +2757,8 @@ func parse(arguments: [String]) throws -> CommandBehavior {
             windowCrop: windowCrop,
             screenCaptureTimeout: screenCaptureTimeout,
             rawOutput: wantsRawOutput,
-            textOutput: captureTextOutput
+            textOutput: captureTextOutput,
+            imageOutput: imageOutput
         )
     )
 }
@@ -2751,7 +2814,7 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         case "--help", "-h", "--version", "--doctor", "--list-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--interactive", "--flat", "--list-menu-bar-items", "--get", "--get-element", "--wait-for-element", "--press", "--press-element", "--raise-window", "--raise", "--close-window", "--minimize-window", "--right", "--double", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only", "--raw", "--with-ascii", "--with-ocr":
             flags.insert(argument)
             index += 1
-        case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--wait-for-window", "--press-at", "--path", "--role", "--subrole", "--title", "--identifier", "--description", "--set-value", "--type", "--key", "--click", "--drag", "--scroll", "--move-window", "--resize-window", "--depth", "--max-children", "--roles", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
+        case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--wait-for-window", "--press-at", "--path", "--role", "--subrole", "--title", "--identifier", "--description", "--set-value", "--type", "--key", "--click", "--drag", "--scroll", "--move-window", "--resize-window", "--depth", "--max-children", "--roles", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language", "--format", "--quality", "--max-dimension":
             let valueIndex = index + 1
             guard valueIndex < arguments.count else {
                 throw RegionShotError.invalidArguments("Missing value for \(argument).")
@@ -3310,9 +3373,9 @@ private func normalizedArgumentValue(_ value: String?) -> String? {
     return trimmed.isEmpty ? nil : trimmed
 }
 
-private func outputURL(from path: String?) throws -> URL {
+private func outputURL(from path: String?, format: ImageOutputFormat) throws -> URL {
     guard let path, !path.isEmpty else {
-        return temporaryOutputURL()
+        return temporaryOutputURL(format: format)
     }
 
     return fileURL(from: path)
@@ -3341,10 +3404,10 @@ private func fileURL(from path: String) -> URL {
     return fileURL.standardizedFileURL
 }
 
-private func temporaryOutputURL() -> URL {
+private func temporaryOutputURL(format: ImageOutputFormat = .png) -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent("regionshot-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString.lowercased())")
-        .appendingPathExtension("png")
+        .appendingPathExtension(format.fileExtension)
 }
 
 private func parseInteger(_ value: String, flag: String) throws -> Int {
@@ -3383,6 +3446,63 @@ private func parseTimeout(_ rawValue: String?) throws -> TimeInterval {
     }
 
     return timeout
+}
+
+private func parseImageOutputOptions(
+    formatValue: String?,
+    qualityValue: String?,
+    maxDimensionValue: String?
+) throws -> ImageOutputOptions {
+    let format = try parseImageOutputFormat(formatValue)
+    let jpegQuality = try parseJPEGQuality(qualityValue)
+    let maxDimension = try parseImageMaxDimension(maxDimensionValue)
+
+    return ImageOutputOptions(
+        format: format,
+        jpegQuality: jpegQuality,
+        maxDimension: maxDimension
+    )
+}
+
+private func parseImageOutputFormat(_ rawValue: String?) throws -> ImageOutputFormat {
+    guard let rawValue else {
+        return defaultImageOutputOptions.format
+    }
+
+    let normalizedValue = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    switch normalizedValue {
+    case "png":
+        return .png
+    case "jpg", "jpeg":
+        return .jpeg
+    default:
+        throw RegionShotError.invalidArguments("`--format` must be `png` or `jpeg`, got `\(rawValue)`.")
+    }
+}
+
+private func parseJPEGQuality(_ rawValue: String?) throws -> Double {
+    guard let rawValue else {
+        return defaultImageOutputOptions.jpegQuality
+    }
+
+    guard let quality = Double(rawValue), quality >= 0, quality <= 1 else {
+        throw RegionShotError.invalidArguments("`--quality` must be a number from 0 to 1.")
+    }
+
+    return quality
+}
+
+private func parseImageMaxDimension(_ rawValue: String?) throws -> Int? {
+    guard let rawValue else {
+        return defaultImageOutputOptions.maxDimension
+    }
+
+    let maxDimension = try parseInteger(rawValue, flag: "--max-dimension")
+    guard imageMaxDimensionRange.contains(maxDimension) else {
+        throw RegionShotError.invalidArguments("`--max-dimension` must be between \(imageMaxDimensionRange.lowerBound) and \(imageMaxDimensionRange.upperBound).")
+    }
+
+    return maxDimension
 }
 
 private func parseAsciiStyle(_ rawValue: String?) throws -> AsciiArtStyle {
@@ -3480,7 +3600,8 @@ private func capture(using command: CaptureCommand) async throws {
                 crop: command.windowCrop,
                 outputURL: command.outputURL,
                 timeout: command.screenCaptureTimeout,
-                selector: applicationSelector
+                selector: applicationSelector,
+                imageOutput: command.imageOutput
             )
             return
         }
@@ -3496,7 +3617,8 @@ private func capture(using command: CaptureCommand) async throws {
             region: region,
             outputURL: command.outputURL,
             timeout: command.screenCaptureTimeout,
-            selector: applicationSelector
+            selector: applicationSelector,
+            imageOutput: command.imageOutput
         )
         return
     }
@@ -3508,21 +3630,28 @@ private func capture(using command: CaptureCommand) async throws {
     try await captureScreenRegion(
         region: region,
         outputURL: command.outputURL,
-        timeout: command.screenCaptureTimeout
+        timeout: command.screenCaptureTimeout,
+        imageOutput: command.imageOutput
     )
 }
 
 private func captureScreenRegion(
     region: CaptureRegion,
     outputURL: URL,
-    timeout: TimeInterval = defaultScreenCaptureKitTimeout
+    timeout: TimeInterval = defaultScreenCaptureKitTimeout,
+    imageOutput: ImageOutputOptions = defaultImageOutputOptions
 ) async throws {
     try await captureScreenRegion(
         region: region,
         outputURL: outputURL,
         ensureAccess: ensureScreenCaptureAccess,
         runCapture: { region, outputURL in
-            try await captureDisplayRegion(region: region, outputURL: outputURL, timeout: timeout)
+            try await captureDisplayRegion(
+                region: region,
+                outputURL: outputURL,
+                timeout: timeout,
+                imageOutput: imageOutput
+            )
         },
         fileExists: { FileManager.default.fileExists(atPath: $0) }
     )
@@ -3977,7 +4106,8 @@ private func handleMenuBar(using command: MenuBarCommand) async throws -> String
             surface,
             item: item,
             outputURL: outputURL,
-            timeout: command.screenCaptureTimeout
+            timeout: command.screenCaptureTimeout,
+            imageOutput: command.imageOutput
         )
         return outputURL.path
     }
@@ -4024,7 +4154,8 @@ private func captureVisibleWindow(using command: VisibleWindowCaptureCommand) as
         try await captureScreenRegion(
             region: region,
             outputURL: command.outputURL,
-            timeout: command.screenCaptureTimeout
+            timeout: command.screenCaptureTimeout,
+            imageOutput: command.imageOutput
         )
     } catch RegionShotError.captureFailed(let message) {
         throw RegionShotError.captureFailed("Failed to capture visible window [\(window.index)] \(displayTitle(window.title)) for `\(catalog.application.name)` at `\(region.rectangleArgument)`: \(message)")
@@ -6890,7 +7021,8 @@ private func captureMenuBarSurface(
     _ surface: MenuBarSurface,
     item: MenuBarCatalogItem,
     outputURL: URL,
-    timeout: TimeInterval
+    timeout: TimeInterval,
+    imageOutput: ImageOutputOptions
 ) async throws {
     let stableFrame = waitForStableMenuBarSurfaceFrame(
         initialFrame: menuBarSurfaceFrame(surface),
@@ -6899,7 +7031,12 @@ private func captureMenuBarSurface(
     let region = try captureRegion(forMenuFrame: stableFrame, item: item)
 
     do {
-        try await captureScreenRegion(region: region, outputURL: outputURL, timeout: timeout)
+        try await captureScreenRegion(
+            region: region,
+            outputURL: outputURL,
+            timeout: timeout,
+            imageOutput: imageOutput
+        )
     } catch RegionShotError.captureFailed(let message) {
         throw RegionShotError.captureFailed("Failed to capture \(surface.kind) for \(formatMenuBarCandidate(item)) at `\(region.rectangleArgument)`: \(message)")
     }
@@ -7629,7 +7766,8 @@ private func captureWindow(
     crop: WindowCropRect?,
     outputURL: URL,
     timeout: TimeInterval,
-    selector: ApplicationSelector
+    selector: ApplicationSelector,
+    imageOutput: ImageOutputOptions
 ) async throws {
     let filter = SCContentFilter(desktopIndependentWindow: window.scWindow)
     let info = SCShareableContent.info(for: filter)
@@ -7666,13 +7804,14 @@ private func captureWindow(
         finalImage = capturedImage
     }
 
-    try writePNG(image: finalImage, to: outputURL)
+    try writeImage(finalImage, to: outputURL, options: imageOutput)
 }
 
 private func captureDisplayRegion(
     region: CaptureRegion,
     outputURL: URL,
-    timeout: TimeInterval
+    timeout: TimeInterval,
+    imageOutput: ImageOutputOptions
 ) async throws {
     try validate(region: region)
     let shareableContent = try await loadDisplayShareableContent(timeout: timeout)
@@ -7745,7 +7884,7 @@ private func captureDisplayRegion(
         throw RegionShotError.captureFailed("ScreenCaptureKit returned no image data for the display capture.")
     }
 
-    try writePNG(image: image, to: outputURL)
+    try writeImage(image, to: outputURL, options: imageOutput)
 }
 
 private func captureApplicationRegion(
@@ -7755,7 +7894,8 @@ private func captureApplicationRegion(
     region: CaptureRegion,
     outputURL: URL,
     timeout: TimeInterval,
-    selector: ApplicationSelector
+    selector: ApplicationSelector,
+    imageOutput: ImageOutputOptions
 ) async throws {
     let regionRect = region.rect
     let plans = planDisplayCaptures(
@@ -7837,7 +7977,7 @@ private func captureApplicationRegion(
         throw RegionShotError.captureFailed("ScreenCaptureKit returned no image data for the filtered capture.")
     }
 
-    try writePNG(image: image, to: outputURL)
+    try writeImage(image, to: outputURL, options: imageOutput)
 }
 
 private func planDisplayRegionCaptures(
@@ -7958,16 +8098,102 @@ private func cropWindowImage(_ image: CGImage, using crop: WindowCropRect, point
     return croppedImage
 }
 
-private func writePNG(image: CGImage, to outputURL: URL) throws {
-    guard let destination = CGImageDestinationCreateWithURL(outputURL as CFURL, UTType.png.identifier as CFString, 1, nil) else {
-        throw RegionShotError.encodeFailed("Failed to create a PNG destination for \(outputURL.path).")
+private func writeImage(_ image: CGImage, to outputURL: URL, options: ImageOutputOptions) throws {
+    let imageForEncoding = try preparedImageForEncoding(image, options: options)
+    guard let destination = CGImageDestinationCreateWithURL(outputURL as CFURL, options.format.typeIdentifier as CFString, 1, nil) else {
+        throw RegionShotError.encodeFailed("Failed to create a \(options.format.displayName) destination for \(outputURL.path).")
     }
 
-    CGImageDestinationAddImage(destination, image, nil)
+    let properties: CFDictionary?
+    switch options.format {
+    case .png:
+        properties = nil
+    case .jpeg:
+        properties = [
+            kCGImageDestinationLossyCompressionQuality as String: options.jpegQuality,
+        ] as CFDictionary
+    }
+
+    CGImageDestinationAddImage(destination, imageForEncoding, properties)
 
     guard CGImageDestinationFinalize(destination) else {
-        throw RegionShotError.encodeFailed("Failed to write PNG data to \(outputURL.path).")
+        throw RegionShotError.encodeFailed("Failed to write \(options.format.displayName) data to \(outputURL.path).")
     }
+}
+
+private func preparedImageForEncoding(_ image: CGImage, options: ImageOutputOptions) throws -> CGImage {
+    let targetSize = scaledImageSize(
+        width: image.width,
+        height: image.height,
+        maxDimension: options.maxDimension
+    )
+    let needsResize = targetSize.width != image.width || targetSize.height != image.height
+    let needsJPEGComposite = options.format == .jpeg
+
+    guard needsResize || needsJPEGComposite else {
+        return image
+    }
+
+    return try renderImageForEncoding(
+        image,
+        width: targetSize.width,
+        height: targetSize.height,
+        opaque: needsJPEGComposite
+    )
+}
+
+private func scaledImageSize(width: Int, height: Int, maxDimension: Int?) -> (width: Int, height: Int) {
+    guard let maxDimension else {
+        return (width, height)
+    }
+
+    let largestDimension = max(width, height)
+    guard largestDimension > maxDimension else {
+        return (width, height)
+    }
+
+    let scale = Double(maxDimension) / Double(largestDimension)
+    return (
+        max(1, Int((Double(width) * scale).rounded())),
+        max(1, Int((Double(height) * scale).rounded()))
+    )
+}
+
+private func renderImageForEncoding(
+    _ image: CGImage,
+    width targetWidth: Int,
+    height targetHeight: Int,
+    opaque: Bool
+) throws -> CGImage {
+    let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+    let alphaInfo: CGImageAlphaInfo = opaque ? .noneSkipLast : .premultipliedLast
+    let bitmapInfo = CGBitmapInfo.byteOrder32Big.rawValue | alphaInfo.rawValue
+
+    guard let context = CGContext(
+        data: nil,
+        width: targetWidth,
+        height: targetHeight,
+        bitsPerComponent: 8,
+        bytesPerRow: 0,
+        space: colorSpace,
+        bitmapInfo: bitmapInfo
+    ) else {
+        throw RegionShotError.encodeFailed("Failed to create an image resize context.")
+    }
+
+    let targetRect = CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight)
+    if opaque {
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        context.fill(targetRect)
+    }
+    context.interpolationQuality = .medium
+    context.draw(image, in: targetRect)
+
+    guard let renderedImage = context.makeImage() else {
+        throw RegionShotError.encodeFailed("Failed to render the resized image.")
+    }
+
+    return renderedImage
 }
 
 private func normalizedTitle(_ title: String?) -> String? {

@@ -429,6 +429,47 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(textOutput.recognitionLanguages, ["de-DE"])
     }
 
+    func testRectangleCaptureParsingSupportsImageOutputOptions() throws {
+        let behavior = try parse(arguments: [
+            "1",
+            "2",
+            "3",
+            "4",
+            "--format", "jpeg",
+            "--quality", "0.7",
+            "--max-dimension", "1200",
+        ])
+
+        guard case .capture(let command) = behavior else {
+            return XCTFail("Expected capture behavior.")
+        }
+
+        XCTAssertEqual(command.imageOutput.format, .jpeg)
+        XCTAssertEqual(command.imageOutput.jpegQuality, 0.7, accuracy: 0.001)
+        XCTAssertEqual(command.imageOutput.maxDimension, 1200)
+        XCTAssertEqual(command.outputURL.pathExtension, "jpg")
+    }
+
+    func testImageOutputOptionsRejectNonCaptureModesAndInvalidQuality() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--list-windows", "--format", "jpeg"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--format"))
+        }
+
+        XCTAssertThrowsError(
+            try parse(arguments: ["1", "2", "3", "4", "--quality", "0.7"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--quality"))
+        }
+
+        XCTAssertThrowsError(
+            try parse(arguments: ["1", "2", "3", "4", "--format", "jpeg", "--quality", "1.5"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--quality"))
+        }
+    }
+
     func testRawOutputRejectsStructuredModes() {
         XCTAssertThrowsError(
             try parse(arguments: ["--app", "Terminal", "--list-windows", "--raw"])
