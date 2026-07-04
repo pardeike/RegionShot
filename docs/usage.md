@@ -167,8 +167,10 @@ regionshot --app "System Settings" --list-elements
 regionshot --app "System Settings" --list-elements --depth 2 --max-children 12
 regionshot --app "System Settings" --list-elements --roles AXButton,AXTextField --interactive --flat
 regionshot --app "System Settings" --wait-for-window "Network" --timeout 10
+regionshot --app "System Settings" --get --path 0.3.1
 regionshot --app "System Settings" --get --role AXTextField --title Name
 regionshot --app "System Settings" --wait-for-element --role AXButton --title Done --timeout 10
+regionshot --app "System Settings" --set-value "Andreas" --path 0.3.1
 regionshot --app "System Settings" --set-value "Andreas" --role AXTextField --title Name
 regionshot --app "System Settings" --type "typed text"
 regionshot --app "System Settings" --key "cmd+s"
@@ -192,6 +194,9 @@ expand the tree. Use `--roles ROLE[,ROLE...]` to keep only matching roles and
 their ancestors, `--interactive` to keep elements with actions and their
 ancestors, and `--flat` to return a flat `elements` array instead of a nested
 tree.
+Use `--path PATH` with `--get`, `--wait-for-element`, `--set-value`, or `--press`
+to target a listed element directly. Paths cannot be combined with fuzzy selector
+fields such as `--role` or `--title`.
 
 `--wait-for-window TITLE` polls the app's accessibility windows until one title
 matches, then returns that window as JSON. Use `--timeout SECONDS` to adjust the

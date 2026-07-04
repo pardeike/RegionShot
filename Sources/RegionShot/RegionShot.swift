@@ -189,6 +189,7 @@ struct MenuChildSelection: Sendable {
 }
 
 struct AccessibilitySelector: Sendable {
+    let path: String?
     let role: String?
     let subrole: String?
     let title: String?
@@ -196,11 +197,20 @@ struct AccessibilitySelector: Sendable {
     let elementDescription: String?
 
     var isEmpty: Bool {
+        path == nil &&
         role == nil &&
         subrole == nil &&
         title == nil &&
         identifier == nil &&
         elementDescription == nil
+    }
+
+    var hasNonPathFields: Bool {
+        role != nil ||
+        subrole != nil ||
+        title != nil ||
+        identifier != nil ||
+        elementDescription != nil
     }
 }
 
@@ -743,6 +753,7 @@ private struct AccessibilityHitResponse: Encodable {
 }
 
 private struct AccessibilitySelectorResponse: Encodable {
+    let path: String?
     let role: String?
     let subrole: String?
     let title: String?
@@ -1087,14 +1098,18 @@ Forms:
   regionshot --app APP --menu-bar-item TEXT --capture-menu [--output FILE]
   regionshot --app APP --list-elements [--depth N] [--max-children N] [--roles ROLE[,ROLE...]] [--interactive] [--flat]
   regionshot --app APP --wait-for-window TITLE [--timeout SECONDS]
+  regionshot --app APP --get --path PATH
   regionshot --app APP --get --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
+  regionshot --app APP --wait-for-element --path PATH [--timeout SECONDS]
   regionshot --app APP --wait-for-element --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT] [--timeout SECONDS]
+  regionshot --app APP --set-value TEXT --path PATH
   regionshot --app APP --set-value TEXT --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
   regionshot --app APP --type TEXT
   regionshot --app APP --key CHORD
   regionshot --app APP --click X,Y [--right] [--double]
   regionshot --app APP --drag X1,Y1,X2,Y2
   regionshot --app APP --scroll DX,DY
+  regionshot --app APP --press --path PATH
   regionshot --app APP --press --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
   regionshot --app APP --press-at X,Y
   regionshot --app APP --element-at X,Y
@@ -1156,7 +1171,7 @@ Rules:
   accessibility modes default to the app's focused window, then main window, then first window
   `--frontmost-window`, `--window-index`, or `--window-name` can override that default for accessibility modes
   `--element-at` and `--press-at` use window-relative x,y coordinates in points
-  selector fields: `--role`, `--subrole`, `--title`, `--identifier`, `--description`
+  selector fields: `--path`, `--role`, `--subrole`, `--title`, `--identifier`, `--description`
   `--wait-for-window TITLE` polls until one matching accessibility window appears, using `--timeout SECONDS`
   `--get` (alias: `--get-element`) returns one matching accessibility element without performing an action
   `--wait-for-element` polls until one matching accessibility element appears, using `--timeout SECONDS`
@@ -1166,6 +1181,7 @@ Rules:
   `--title`, `--identifier`, and `--description` prefer exact matches, then fall back to case-insensitive contains
   `--list-elements` accepts `--depth` 0...12, `--max-children` 1...200, `--roles`, `--interactive`, and `--flat`
   list-elements responses include stable `path` strings such as `0.3.1` for each returned element
+  use `--path PATH` to target a listed element directly; it cannot be combined with fuzzy selector fields
   capture and ScreenCaptureKit window listing require Screen Recording permission
   accessibility inspection and actions require Accessibility permission
   rectangle mode without `--app` forwards to `screencapture -R`
@@ -1934,6 +1950,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     let elementPoint = try parseWindowPoint(parsed.values["--element-at"], flag: "--element-at")
     let pressPoint = try parseWindowPoint(parsed.values["--press-at"], flag: "--press-at")
     let selector = parseAccessibilitySelector(from: parsed.values)
+    try validateAccessibilitySelector(selector)
     let outputPath = parsed.values["--output"]
     let asciiImagePath = normalizedArgumentValue(parsed.values["--ascii"])
     let asciiStyle = try parseAsciiStyle(parsed.values["--ascii-style"])
@@ -2297,19 +2314,19 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     }
 
     if wantsAccessibilityGet, selector.isEmpty {
-        throw RegionShotError.invalidArguments("`--get` (alias: `--get-element`) requires at least one selector field: `--role`, `--subrole`, `--title`, `--identifier`, or `--description`.")
+        throw RegionShotError.invalidArguments("`--get` (alias: `--get-element`) requires at least one selector field: `--path`, `--role`, `--subrole`, `--title`, `--identifier`, or `--description`.")
     }
 
     if wantsAccessibilityWaitForElement, selector.isEmpty {
-        throw RegionShotError.invalidArguments("`--wait-for-element` requires at least one selector field: `--role`, `--subrole`, `--title`, `--identifier`, or `--description`.")
+        throw RegionShotError.invalidArguments("`--wait-for-element` requires at least one selector field: `--path`, `--role`, `--subrole`, `--title`, `--identifier`, or `--description`.")
     }
 
     if wantsAccessibilitySetValue, selector.isEmpty {
-        throw RegionShotError.invalidArguments("`--set-value` requires at least one selector field: `--role`, `--subrole`, `--title`, `--identifier`, or `--description`.")
+        throw RegionShotError.invalidArguments("`--set-value` requires at least one selector field: `--path`, `--role`, `--subrole`, `--title`, `--identifier`, or `--description`.")
     }
 
     if wantsAccessibilityPress, selector.isEmpty {
-        throw RegionShotError.invalidArguments("`--press` (alias: `--press-element`) requires at least one selector field: `--role`, `--subrole`, `--title`, `--identifier`, or `--description`.")
+        throw RegionShotError.invalidArguments("`--press` (alias: `--press-element`) requires at least one selector field: `--path`, `--role`, `--subrole`, `--title`, `--identifier`, or `--description`.")
     }
 
     if !wantsAccessibilityGet, !wantsAccessibilityWaitForElement, !wantsAccessibilitySetValue, !wantsAccessibilityPress, !selector.isEmpty {
@@ -2459,7 +2476,7 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         case "--help", "-h", "--version", "--doctor", "--list-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--interactive", "--flat", "--list-menu-bar-items", "--get", "--get-element", "--wait-for-element", "--press", "--press-element", "--raise-window", "--raise", "--close-window", "--minimize-window", "--right", "--double", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only":
             flags.insert(argument)
             index += 1
-        case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--wait-for-window", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--set-value", "--type", "--key", "--click", "--drag", "--scroll", "--move-window", "--resize-window", "--depth", "--max-children", "--roles", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
+        case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--wait-for-window", "--press-at", "--path", "--role", "--subrole", "--title", "--identifier", "--description", "--set-value", "--type", "--key", "--click", "--drag", "--scroll", "--move-window", "--resize-window", "--depth", "--max-children", "--roles", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
             let valueIndex = index + 1
             guard valueIndex < arguments.count else {
                 throw RegionShotError.invalidArguments("Missing value for \(argument).")
@@ -2971,12 +2988,42 @@ private let keyCodeByName: [String: CGKeyCode] = [
 
 private func parseAccessibilitySelector(from values: [String: String]) -> AccessibilitySelector {
     AccessibilitySelector(
+        path: normalizedArgumentValue(values["--path"]),
         role: normalizedArgumentValue(values["--role"]),
         subrole: normalizedArgumentValue(values["--subrole"]),
         title: normalizedArgumentValue(values["--title"]),
         identifier: normalizedArgumentValue(values["--identifier"]),
         elementDescription: normalizedArgumentValue(values["--description"])
     )
+}
+
+private func validateAccessibilitySelector(_ selector: AccessibilitySelector) throws {
+    guard let path = selector.path else {
+        return
+    }
+
+    try validateAccessibilityPath(path)
+
+    if selector.hasNonPathFields {
+        throw RegionShotError.invalidArguments("`--path` cannot be combined with `--role`, `--subrole`, `--title`, `--identifier`, or `--description`; paths already identify one element.")
+    }
+}
+
+private func validateAccessibilityPath(_ path: String) throws {
+    let components = path.split(separator: ".", omittingEmptySubsequences: false)
+    guard !components.isEmpty else {
+        throw RegionShotError.invalidArguments("`--path` requires a dot-separated element path such as `0.3.1`.")
+    }
+
+    for component in components {
+        guard !component.isEmpty, component.allSatisfy(\.isNumber) else {
+            throw RegionShotError.invalidArguments("`--path` requires dot-separated non-negative child indices, for example `0.3.1`.")
+        }
+    }
+
+    guard components.first == "0" else {
+        throw RegionShotError.invalidArguments("`--path` must start at the selected window root `0`.")
+    }
 }
 
 private func normalizedArgumentValue(_ value: String?) -> String? {
@@ -4585,6 +4632,7 @@ private func accessibilityWindowEntry(for window: AccessibilityCatalogWindow) ->
 
 private func accessibilitySelectorResponse(for selector: AccessibilitySelector) -> AccessibilitySelectorResponse {
     AccessibilitySelectorResponse(
+        path: selector.path,
         role: selector.role,
         subrole: selector.subrole,
         title: selector.title,
@@ -5704,6 +5752,10 @@ private func selectAccessibilityElement(
     in root: AXUIElement,
     using selector: AccessibilitySelector
 ) throws -> AccessibilityElementCandidate {
+    if let path = selector.path {
+        return try accessibilityElementCandidate(atPath: path, in: root, requirePressAction: false)
+    }
+
     let candidates = matchingAccessibilityElementCandidates(
         in: root,
         using: selector,
@@ -5726,6 +5778,15 @@ private func waitForAccessibilityElement(
     let deadline = Date().addingTimeInterval(timeout)
 
     repeat {
+        if let path = selector.path {
+            do {
+                return try accessibilityElementCandidate(atPath: path, in: root, requirePressAction: false)
+            } catch RegionShotError.accessibilityQueryFailed {
+                Thread.sleep(forTimeInterval: pollInterval)
+                continue
+            }
+        }
+
         let candidates = matchingAccessibilityElementCandidates(
             in: root,
             using: selector,
@@ -5754,6 +5815,10 @@ private func selectPressableAccessibilityElement(
     in root: AXUIElement,
     using selector: AccessibilitySelector
 ) throws -> AccessibilityElementCandidate {
+    if let path = selector.path {
+        return try accessibilityElementCandidate(atPath: path, in: root, requirePressAction: true)
+    }
+
     let candidates = matchingAccessibilityElementCandidates(
         in: root,
         using: selector,
@@ -5806,6 +5871,59 @@ private func matchingAccessibilityElementCandidates(
     return candidates
 }
 
+private func accessibilityElementCandidate(
+    atPath path: String,
+    in root: AXUIElement,
+    requirePressAction: Bool
+) throws -> AccessibilityElementCandidate {
+    let resolved = try resolveAccessibilityElement(atPath: path, in: root)
+    let candidate = accessibilityElementCandidate(for: resolved.element, depth: resolved.depth)
+
+    if requirePressAction, !candidate.actions.contains(kAXPressAction as String) {
+        throw RegionShotError.accessibilityQueryFailed("Accessibility element at path `\(path)` does not support `AXPress`.")
+    }
+
+    return candidate
+}
+
+private func resolveAccessibilityElement(atPath path: String, in root: AXUIElement) throws -> (element: AXUIElement, depth: Int) {
+    let indices = path
+        .split(separator: ".", omittingEmptySubsequences: false)
+        .compactMap { Int($0) }
+    var currentElement = root
+    var currentPath = "0"
+
+    for (depth, index) in indices.dropFirst().enumerated() {
+        let children = copyAXElements(from: currentElement, attribute: kAXChildrenAttribute as CFString)
+        guard index < children.count else {
+            throw RegionShotError.accessibilityQueryFailed("No accessibility element exists at path `\(path)`: child index \(index) is outside the \(children.count) children at path `\(currentPath)`.")
+        }
+
+        currentElement = children[index]
+        currentPath += ".\(index)"
+
+        if depth > 64 {
+            throw RegionShotError.accessibilityQueryFailed("Accessibility path `\(path)` is too deep.")
+        }
+    }
+
+    return (currentElement, max(0, indices.count - 1))
+}
+
+private func accessibilityElementCandidate(for element: AXUIElement, depth: Int) -> AccessibilityElementCandidate {
+    AccessibilityElementCandidate(
+        element: element,
+        depth: depth,
+        role: copyAXString(from: element, attribute: kAXRoleAttribute as CFString),
+        subrole: copyAXString(from: element, attribute: kAXSubroleAttribute as CFString),
+        title: normalizedTitle(copyAXString(from: element, attribute: kAXTitleAttribute as CFString)),
+        description: normalizedTitle(copyAXString(from: element, attribute: kAXDescriptionAttribute as CFString)),
+        identifier: normalizedTitle(copyAXString(from: element, attribute: kAXIdentifierAttribute as CFString)),
+        frame: copyAXFrame(from: element),
+        actions: copyAXActions(from: element)
+    )
+}
+
 private func selectUniqueAccessibilityCandidate(
     from candidates: [AccessibilityElementCandidate],
     selector: AccessibilitySelector,
@@ -5833,17 +5951,7 @@ private func collectAccessibilityElementCandidates(
     childLimit: Int,
     currentDepth: Int = 0
 ) -> [AccessibilityElementCandidate] {
-    let candidate = AccessibilityElementCandidate(
-        element: root,
-        depth: currentDepth,
-        role: copyAXString(from: root, attribute: kAXRoleAttribute as CFString),
-        subrole: copyAXString(from: root, attribute: kAXSubroleAttribute as CFString),
-        title: normalizedTitle(copyAXString(from: root, attribute: kAXTitleAttribute as CFString)),
-        description: normalizedTitle(copyAXString(from: root, attribute: kAXDescriptionAttribute as CFString)),
-        identifier: normalizedTitle(copyAXString(from: root, attribute: kAXIdentifierAttribute as CFString)),
-        frame: copyAXFrame(from: root),
-        actions: copyAXActions(from: root)
-    )
+    let candidate = accessibilityElementCandidate(for: root, depth: currentDepth)
 
     guard depthRemaining > 0 else {
         return [candidate]
@@ -6593,6 +6701,7 @@ private func normalizedSelectorText(_ value: String?) -> String? {
 
 private func describe(selector: AccessibilitySelector) -> String {
     let parts = [
+        selector.path.map { "path `\($0)`" },
         selector.role.map { "role `\($0)`" },
         selector.subrole.map { "subrole `\($0)`" },
         selector.title.map { "title `\($0)`" },

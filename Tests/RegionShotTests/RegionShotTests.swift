@@ -590,8 +590,43 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(selector.role, "AXTextField")
         XCTAssertEqual(selector.title, "Name")
         XCTAssertEqual(selector.identifier, "name-field")
+        XCTAssertNil(selector.path)
         XCTAssertNil(selector.subrole)
         XCTAssertNil(selector.elementDescription)
+    }
+
+    func testAccessibilityGetElementParsingSupportsPathSelector() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--get",
+            "--path", "0.3.1",
+        ])
+
+        guard case .inspectAccessibility(let command) = behavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .getElement(let selector) = command.mode else {
+            return XCTFail("Expected accessibility get mode.")
+        }
+
+        XCTAssertEqual(selector.path, "0.3.1")
+    }
+
+    func testAccessibilityPathSelectorRejectsInvalidOrMixedSelectors() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--get", "--path", "1.2"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--path"))
+            XCTAssertTrue(String(describing: error).contains("0"))
+        }
+
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--get", "--path", "0.1", "--role", "AXButton"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--path"))
+            XCTAssertTrue(String(describing: error).contains("--role"))
+        }
     }
 
     func testAccessibilityGetElementAliasParsing() throws {
