@@ -5,13 +5,13 @@ This page is for maintainers.
 ## Build The DMG
 
 ```bash
-VERSION=1.0.0 ./Scripts/package-dmg.sh
+VERSION=v1.1 ./Scripts/package-dmg.sh
 ```
 
 The output is written to:
 
 ```text
-output/release/RegionShot-1.0.0/
+output/release/RegionShot-v1.1/
 ```
 
 The DMG contains:
@@ -44,14 +44,14 @@ Override values when needed:
 ```bash
 CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 NOTARY_KEYCHAIN_PROFILE="profile-name" \
-VERSION=1.0.0 \
+VERSION=v1.1 \
 ./Scripts/package-dmg.sh
 ```
 
 For a local unsigned/not-notarized packaging test:
 
 ```bash
-NOTARIZE=0 VERSION=1.0.0 ./Scripts/package-dmg.sh
+NOTARIZE=0 VERSION=v1.1 ./Scripts/package-dmg.sh
 ```
 
 ## Checks
@@ -63,7 +63,7 @@ and writes a SHA-256 file next to it.
 Manual checks:
 
 ```bash
-xcrun stapler validate output/release/RegionShot-1.0.0/RegionShot-1.0.0-macos.dmg
-spctl --assess --type open --context context:primary-signature --verbose output/release/RegionShot-1.0.0/RegionShot-1.0.0-macos.dmg
-shasum -a 256 output/release/RegionShot-1.0.0/RegionShot-1.0.0-macos.dmg
+xcrun stapler validate output/release/RegionShot-v1.1/RegionShot-v1.1-macos.dmg
+spctl --assess --type open --context context:primary-signature --verbose output/release/RegionShot-v1.1/RegionShot-v1.1-macos.dmg
+shasum -a 256 output/release/RegionShot-v1.1/RegionShot-v1.1-macos.dmg
 ```

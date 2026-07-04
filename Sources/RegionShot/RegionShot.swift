@@ -1443,22 +1443,24 @@ private let managedAgentInstructionsStartMarker = "<!-- regionshot-managed:start
 private let managedAgentInstructionsEndMarker = "<!-- regionshot-managed:end -->"
 private let agentSupportDebugEnvironmentKey = "REGIONSHOT_DEBUG_AGENT_SYNC"
 private let legacyAgentSupportDebugEnvironmentKey = "REGIONSHOT_DEBUG_CODEX_SYNC"
-private let regionShotFallbackVersion = "1.0.0"
+private let regionShotFallbackVersion = "v1.1"
 private let regionShotVersionEnvironmentKey = "REGIONSHOT_VERSION"
 private let regionShotSupportDirectoryName = ".regionshot-support"
 private let regionShotSupportVersionFilename = "VERSION"
 
+private let cachedRegionShotVersion: String = regionShotVersion(
+    environment: ProcessInfo.processInfo.environment,
+    executableDirectory: currentExecutableURL()?.deletingLastPathComponent(),
+    currentDirectoryURL: URL(
+        fileURLWithPath: FileManager.default.currentDirectoryPath,
+        isDirectory: true
+    ),
+    readTextFile: readTextFileIfPresent,
+    gitDescribe: gitDescribeVersion
+)
+
 private func currentRegionShotVersion() -> String {
-    regionShotVersion(
-        environment: ProcessInfo.processInfo.environment,
-        executableDirectory: currentExecutableURL()?.deletingLastPathComponent(),
-        currentDirectoryURL: URL(
-            fileURLWithPath: FileManager.default.currentDirectoryPath,
-            isDirectory: true
-        ),
-        readTextFile: readTextFileIfPresent,
-        gitDescribe: gitDescribeVersion
-    )
+    cachedRegionShotVersion
 }
 
 func regionShotVersion(
@@ -1485,11 +1487,48 @@ func regionShotVersion(
         return supportVersion
     }
 
-    if let gitVersion = normalizedVersion(gitDescribe(currentDirectoryURL)) {
+    if
+        let repositoryURL = regionShotRepositoryRoot(
+            containing: currentDirectoryURL,
+            readTextFile: readTextFile
+        ),
+        let gitVersion = normalizedVersion(gitDescribe(repositoryURL))
+    {
         return gitVersion
     }
 
     return regionShotFallbackVersion
+}
+
+private func regionShotRepositoryRoot(
+    containing currentDirectoryURL: URL,
+    readTextFile: (URL) -> String?
+) -> URL? {
+    var candidate = currentDirectoryURL.standardizedFileURL
+
+    while true {
+        let manifestURL = candidate.appendingPathComponent("Package.swift")
+        if
+            let manifest = readTextFile(manifestURL),
+            packageManifestDeclaresRegionShot(manifest)
+        {
+            return candidate
+        }
+
+        let parent = candidate.deletingLastPathComponent()
+        if parent.path == candidate.path {
+            return nil
+        }
+
+        candidate = parent
+    }
+}
+
+private func packageManifestDeclaresRegionShot(_ manifest: String) -> Bool {
+    manifest.range(
+        of: #"name\s*:\s*"RegionShot""#,
+        options: .regularExpression
+    ) != nil
 }
 
 private func normalizedVersion(_ rawValue: String?) -> String? {
@@ -2241,7 +2280,8 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     let keyChord = try parseKeyChord(parsed.values["--key"])
     let wantsAccessibilityKeyChord = parsed.values["--key"] != nil
     let wantsPress = parsed.flags.contains("--press") || parsed.flags.contains("--press-element")
-    let wantsMenuBarPress = wantsPress && menuBarSelection != nil
+    let wantsExplicitMenuBarPress = parsed.flags.contains("--menu-bar-press")
+    let wantsMenuBarPress = wantsExplicitMenuBarPress || (wantsPress && menuBarSelection != nil)
     let wantsAccessibilityPress = wantsPress && !wantsMenuBarPress
     let wantsRaiseWindow = parsed.flags.contains("--raise-window") || parsed.flags.contains("--raise")
     let wantsCloseWindow = parsed.flags.contains("--close-window")
@@ -2893,7 +2933,37 @@ private func parseCaptureSubcommand(arguments: [String]) throws -> CommandBehavi
         throw RegionShotError.invalidArguments("`capture` expects rectangle coordinates or capture flags. Run `regionshot capture --help`.")
     }
 
-    return try parse(arguments: arguments)
+    let forwardedArguments = try captureSubcommandArguments(arguments)
+    let behavior = try parse(arguments: forwardedArguments)
+
+    switch behavior {
+    case .capture, .captureVisibleWindow:
+        return behavior
+    default:
+        throw RegionShotError.invalidArguments("`capture` requires rectangle coordinates, `--display`, `--all-displays`, `--visible-window`, or an app window selection. Use `regionshot windows` to list app windows.")
+    }
+}
+
+private func captureSubcommandArguments(_ arguments: [String]) throws -> [String] {
+    let parsed = try parseRawArguments(arguments)
+    let hasApplicationSelector = try parseApplicationSelector(values: parsed.values) != nil
+    let hasWindowSelection = parsed.flags.contains("--frontmost-window") ||
+        parsed.values["--window-index"] != nil ||
+        parsed.values["--window-name"] != nil
+    let hasRegion = parsed.region != nil
+    let hasDisplaySelection = parsed.values["--display"] != nil ||
+        parsed.flags.contains("--all-displays")
+    let hasVisibleWindowCapture = parsed.flags.contains("--visible-window")
+
+    if hasApplicationSelector,
+       !hasWindowSelection,
+       !hasRegion,
+       !hasDisplaySelection,
+       !hasVisibleWindowCapture {
+        return arguments + ["--frontmost-window"]
+    }
+
+    return arguments
 }
 
 private func parseAppsSubcommand(arguments: [String]) throws -> CommandBehavior {
@@ -3003,14 +3073,12 @@ private func parseAXSubcommand(arguments: [String]) throws -> CommandBehavior {
         "resize": "--resize-window",
     ]
 
-    guard let translated = try translateActionSubcommand(
+    let translated = try translateActionSubcommand(
         name: "ax",
         arguments: arguments,
         flagActions: flagActions,
         valueActions: valueActions
-    ) else {
-        return .showHelpText(axHelpText)
-    }
+    )
     return try parse(arguments: translated)
 }
 
@@ -3019,20 +3087,18 @@ private func parseMenuSubcommand(arguments: [String]) throws -> CommandBehavior 
         return .showHelpText(menuHelpText)
     }
 
-    guard let translated = try translateActionSubcommand(
+    let translated = try translateActionSubcommand(
         name: "menu",
         arguments: arguments,
         flagActions: [
             "list": "--list-menu-bar-items",
-            "press": "--press",
+            "press": "--menu-bar-press",
             "capture": "--capture-menu",
         ],
         valueActions: [
             "press-item": "--press-menu-item",
         ]
-    ) else {
-        return .showHelpText(menuHelpText)
-    }
+    )
     return try parse(arguments: translated)
 }
 
@@ -3041,7 +3107,7 @@ private func translateActionSubcommand(
     arguments: [String],
     flagActions: [String: String],
     valueActions: [String: String]
-) throws -> [String]? {
+) throws -> [String] {
     var forwardedArguments: [String] = []
     var actionArguments: [String] = []
     var foundAction = false
@@ -3078,7 +3144,31 @@ private func translateActionSubcommand(
         }
     }
 
-    return foundAction ? forwardedArguments + actionArguments : nil
+    guard foundAction else {
+        if let unknownAction = firstUnknownActionToken(in: arguments) {
+            throw RegionShotError.invalidArguments("Unknown `\(name)` action `\(unknownAction)`. Run `regionshot \(name) --help`.")
+        }
+
+        throw RegionShotError.invalidArguments("Missing `\(name)` action. Run `regionshot \(name) --help`.")
+    }
+
+    return forwardedArguments + actionArguments
+}
+
+private func firstUnknownActionToken(in arguments: [String]) -> String? {
+    var index = 0
+
+    while index < arguments.count {
+        let argument = arguments[index]
+        if argument.hasPrefix("--") {
+            index += subcommandValueOptionFlags.contains(argument) ? 2 : 1
+            continue
+        }
+
+        return argument
+    }
+
+    return nil
 }
 
 private func parseRawArguments(_ arguments: [String]) throws -> ParsedArguments {
@@ -3129,7 +3219,7 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         let argument = arguments[index]
 
         switch argument {
-        case "--help", "-h", "--version", "--doctor", "--list-displays", "--all-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--interactive", "--flat", "--list-menu-bar-items", "--get", "--get-element", "--wait-for-element", "--press", "--press-element", "--raise-window", "--raise", "--close-window", "--minimize-window", "--right", "--double", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only", "--raw", "--with-ascii", "--with-ocr", "--no-prompt":
+        case "--help", "-h", "--version", "--doctor", "--list-displays", "--all-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--interactive", "--flat", "--list-menu-bar-items", "--menu-bar-press", "--get", "--get-element", "--wait-for-element", "--press", "--press-element", "--raise-window", "--raise", "--close-window", "--minimize-window", "--right", "--double", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only", "--raw", "--with-ascii", "--with-ocr", "--no-prompt":
             flags.insert(argument)
             index += 1
         case "--x", "--y", "--width", "--height", "--display", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--wait-for-window", "--press-at", "--path", "--role", "--subrole", "--title", "--identifier", "--description", "--set-value", "--type", "--key", "--click", "--drag", "--scroll", "--move-window", "--resize-window", "--depth", "--max-children", "--roles", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language", "--format", "--quality", "--max-dimension":

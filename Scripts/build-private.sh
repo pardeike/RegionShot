@@ -10,6 +10,11 @@ target_path="$install_dir/$private_name"
 support_source_dir="$project_dir/AgentSupport"
 support_root_dir="$install_dir/.regionshot-support"
 support_target_dir="$support_root_dir/AgentSupport"
+version="${VERSION:-}"
+
+if [[ -z "$version" ]]; then
+  version="$(git -C "$project_dir" describe --tags --always --dirty)"
+fi
 
 identity="${CODESIGN_IDENTITY:-}"
 if [[ -z "$identity" ]]; then
@@ -42,6 +47,7 @@ fi
 rm -rf "$support_target_dir" "$support_root_dir/Codex"
 mkdir -p "$support_root_dir"
 ditto "$support_source_dir" "$support_target_dir"
+printf '%s\n' "$version" > "$support_root_dir/VERSION"
 
 if [[ -n "$identity" ]]; then
   codesign --force --sign "$identity" "$target_path"
@@ -54,3 +60,4 @@ fi
 codesign --verify --verbose "$target_path"
 echo "Private binary: $target_path"
 echo "Agent support files: $support_target_dir"
+echo "Version metadata: $support_root_dir/VERSION"

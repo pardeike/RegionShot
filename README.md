@@ -1,7 +1,7 @@
 # RegionShot
 
 RegionShot is a small macOS command line tool for screenshots, window capture,
-menu capture, and simple UI actions.
+menu capture, UI inspection, and Accessibility-driven UI actions.
 
 It is built for agents and scripts. It helps them ask macOS for the right
 thing instead of guessing screen rectangles:
@@ -9,14 +9,16 @@ thing instead of guessing screen rectangles:
 - find a running app
 - list app windows
 - capture a window or a visible floating panel
-- list and raise accessibility windows
+- list, raise, move, resize, close, and minimize accessibility windows
 - open and capture a menu-bar item
-- press a known menu item or accessibility button
+- read accessibility element state and press/set/type/key/click/drag/scroll UI
+- launch, activate, quit, and wait for local apps
+- read or set clipboard text
 - convert a screenshot to a compact text view
 
 ## Install
 
-Download `RegionShot-1.0.0-macos.dmg` from the GitHub release, open it, and run
+Download `RegionShot-v1.1-macos.dmg` from the GitHub release, open it, and run
 `Install RegionShot.command`.
 
 The installer copies `regionshot` to `~/Scripts/regionshot`.
@@ -56,12 +58,21 @@ regionshot displays
 regionshot capture --display DISPLAY_ID --output ~/Desktop/display.png
 regionshot apps Terminal
 regionshot ax --app Terminal windows
+regionshot ax --app Terminal tree --interactive --flat
+regionshot ax --app Terminal set-value "text" --path 0.3.1
+regionshot ax --app Terminal key cmd+s
 regionshot ax --app Terminal raise --window-index 0
+regionshot launch com.apple.TextEdit --wait-window
+regionshot quit --app TextEdit
 regionshot windows --app Terminal --visible
 regionshot capture --app Terminal --visible-window --output ~/Desktop/terminal.png
+regionshot capture --app Terminal --with-ocr --max-dimension 1200
 regionshot menu --app Drafty list
+regionshot menu --app Drafty press --menu-bar-index 0
 regionshot menu --app Drafty press-item "Quick Tasks" --menu-bar-index 0
-regionshot ascii ~/Desktop/terminal.png
+regionshot ascii ~/Desktop/terminal.png --ocr-only
+regionshot doctor
+regionshot clipboard
 ```
 
 Running `regionshot` without arguments prints a short command summary. Existing

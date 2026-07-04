@@ -59,6 +59,28 @@ final class RegionShotTests: XCTestCase {
         XCTAssertTrue(command.rawOutput)
     }
 
+    func testCaptureSubcommandDefaultsAppOnlyToFrontmostWindowCapture() throws {
+        let behavior = try parse(arguments: ["capture", "--app", "Finder", "--output", "/tmp/finder.png"])
+
+        guard case .capture(let command) = behavior else {
+            return XCTFail("Expected capture behavior.")
+        }
+
+        XCTAssertNil(command.region)
+        XCTAssertEqual(command.outputURL.path, "/tmp/finder.png")
+        guard case .frontmost? = command.windowSelection else {
+            return XCTFail("Expected frontmost app-window capture.")
+        }
+    }
+
+    func testCaptureSubcommandRejectsNonCaptureModes() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["capture", "--app", "Finder", "--list-windows"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("windows"))
+        }
+    }
+
     func testAppsAndDisplaysSubcommands() throws {
         let appsBehavior = try parse(arguments: ["apps", "Terminal"])
 
@@ -126,7 +148,29 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(selector.path, "0.1")
     }
 
+    func testAXSubcommandRejectsUnknownAction() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["ax", "--app", "Finder", "tre"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("Unknown `ax` action `tre`"))
+        }
+    }
+
     func testMenuAndAsciiSubcommands() throws {
+        let pressBehavior = try parse(arguments: [
+            "menu",
+            "--app", "Drafty",
+            "press",
+        ])
+
+        guard case .menuBar(let pressCommand) = pressBehavior else {
+            return XCTFail("Expected menu-bar press behavior.")
+        }
+
+        guard case .pressItem = pressCommand.mode else {
+            return XCTFail("Expected menu-bar press mode.")
+        }
+
         let menuBehavior = try parse(arguments: [
             "menu",
             "--app", "Drafty",
@@ -152,6 +196,14 @@ final class RegionShotTests: XCTestCase {
 
         XCTAssertEqual(asciiCommand.imageURL.path, "/tmp/screenshot.png")
         XCTAssertEqual(asciiCommand.outputMode, .ocrOnly)
+    }
+
+    func testMenuSubcommandRejectsUnknownAction() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["menu", "--app", "Finder", "pres"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("Unknown `menu` action `pres`"))
+        }
     }
 
     func testDoctorParsing() throws {
@@ -2021,29 +2073,53 @@ final class RegionShotTests: XCTestCase {
         XCTAssertFalse(gitDescribeWasCalled)
     }
 
-    func testRegionShotVersionFallsBackToGitDescribeThenSourceVersion() {
+    func testRegionShotVersionUsesGitDescribeOnlyForRegionShotRepository() {
+        let repositoryURL = URL(fileURLWithPath: "/tmp/RegionShot", isDirectory: true)
+        var requestedGitDescribeURLs: [URL] = []
+
         let gitVersion = regionShotVersion(
             environment: [:],
             executableDirectory: nil,
-            currentDirectoryURL: URL(fileURLWithPath: "/tmp/repo", isDirectory: true),
-            readTextFile: { _ in nil },
+            currentDirectoryURL: repositoryURL.appendingPathComponent("docs", isDirectory: true),
+            readTextFile: { url in
+                if url.path == repositoryURL.appendingPathComponent("Package.swift").path {
+                    return #"let package = Package(name: "RegionShot")"#
+                }
+
+                return nil
+            },
             gitDescribe: { url in
-                XCTAssertEqual(url.path, "/tmp/repo")
+                requestedGitDescribeURLs.append(url)
                 return "v1.0.0-4-gabcdef"
             }
         )
 
         XCTAssertEqual(gitVersion, "v1.0.0-4-gabcdef")
+        XCTAssertEqual(requestedGitDescribeURLs, [repositoryURL])
+    }
+
+    func testRegionShotVersionIgnoresForeignRepositoryGitDescribe() {
+        var gitDescribeWasCalled = false
 
         let fallbackVersion = regionShotVersion(
             environment: [:],
             executableDirectory: nil,
-            currentDirectoryURL: URL(fileURLWithPath: "/tmp/repo", isDirectory: true),
-            readTextFile: { _ in nil },
-            gitDescribe: { _ in nil }
+            currentDirectoryURL: URL(fileURLWithPath: "/tmp/DecompilerServer", isDirectory: true),
+            readTextFile: { url in
+                if url.path == "/tmp/DecompilerServer/Package.swift" {
+                    return #"let package = Package(name: "DecompilerServer")"#
+                }
+
+                return nil
+            },
+            gitDescribe: { _ in
+                gitDescribeWasCalled = true
+                return "v1.3.6-2-g248d20d"
+            }
         )
 
-        XCTAssertEqual(fallbackVersion, "1.0.0")
+        XCTAssertEqual(fallbackVersion, "v1.1")
+        XCTAssertFalse(gitDescribeWasCalled)
     }
 
     func testVisibleWindowCatalogFiltersToNormalVisibleWindows() {
