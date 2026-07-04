@@ -241,6 +241,66 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
+    func testAccessibilityElementListParsingUsesTreeDefaults() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--list-elements",
+        ])
+
+        guard case .inspectAccessibility(let command) = behavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .listElements = command.mode else {
+            return XCTFail("Expected element list mode.")
+        }
+
+        XCTAssertEqual(command.treeDepth, 4)
+        XCTAssertEqual(command.treeChildLimit, 25)
+    }
+
+    func testAccessibilityElementListParsingSupportsTreeLimits() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--list-elements",
+            "--depth", "2",
+            "--max-children", "10",
+        ])
+
+        guard case .inspectAccessibility(let command) = behavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .listElements = command.mode else {
+            return XCTFail("Expected element list mode.")
+        }
+
+        XCTAssertEqual(command.treeDepth, 2)
+        XCTAssertEqual(command.treeChildLimit, 10)
+    }
+
+    func testAccessibilityTreeLimitOptionsRequireElementListMode() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--depth", "2"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--list-elements"))
+        }
+    }
+
+    func testAccessibilityTreeLimitOptionsRejectOutOfRangeValues() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--list-elements", "--depth", "13"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--depth"))
+        }
+
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--list-elements", "--max-children", "0"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--max-children"))
+        }
+    }
+
     func testRaiseWindowParsingWithIndex() throws {
         let behavior = try parse(arguments: [
             "--app", "Terminal",

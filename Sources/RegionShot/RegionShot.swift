@@ -123,6 +123,8 @@ struct AccessibilityCommand: Sendable {
     let applicationSelector: ApplicationSelector
     let windowSelection: WindowSelection?
     let mode: AccessibilityMode
+    let treeDepth: Int
+    let treeChildLimit: Int
 }
 
 struct MenuBarCommand: Sendable {
@@ -679,6 +681,10 @@ private let defaultToneAsciiMaxHeight = 80
 private let asciiWidthRange = 16...240
 private let asciiMaxHeightRange = 8...240
 private let maximumVisibleAppWindowLayer = 10
+private let defaultAccessibilityTreeDepth = 4
+private let defaultAccessibilityTreeChildLimit = 25
+private let accessibilityTreeDepthRange = 0...12
+private let accessibilityTreeChildLimitRange = 1...200
 
 private let usageText = """
 regionshot = macOS screenshot wrapper around native `screencapture` and `ScreenCaptureKit`.
@@ -713,7 +719,7 @@ Forms:
   regionshot --app APP --menu-bar-item TEXT --press
   regionshot --app APP --menu-bar-item TEXT --press-menu-item TEXT
   regionshot --app APP --menu-bar-item TEXT --capture-menu [--output FILE]
-  regionshot --app APP --list-elements
+  regionshot --app APP --list-elements [--depth N] [--max-children N]
   regionshot --app APP --press --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
   regionshot --app APP --press-at X,Y
   regionshot --app APP --element-at X,Y
@@ -758,6 +764,7 @@ Rules:
   `--element-at` and `--press-at` use window-relative x,y coordinates in points
   selector fields: `--role`, `--subrole`, `--title`, `--identifier`, `--description`
   `--title`, `--identifier`, and `--description` prefer exact matches, then fall back to case-insensitive contains
+  `--list-elements` accepts `--depth` 0...12 and `--max-children` 1...200
   capture and ScreenCaptureKit window listing require Screen Recording permission
   accessibility inspection and actions require Accessibility permission
   rectangle mode without `--app` forwards to `screencapture -R`
@@ -1196,6 +1203,18 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     let wantsAccessibilityWindowList = parsed.flags.contains("--list-accessibility-windows") ||
         parsed.flags.contains("--list-ax-windows")
     let wantsElementList = parsed.flags.contains("--list-elements")
+    let elementTreeDepth = try parseBoundedIntegerOption(
+        parsed.values["--depth"],
+        flag: "--depth",
+        defaultValue: defaultAccessibilityTreeDepth,
+        allowedRange: accessibilityTreeDepthRange
+    )
+    let elementTreeChildLimit = try parseBoundedIntegerOption(
+        parsed.values["--max-children"],
+        flag: "--max-children",
+        defaultValue: defaultAccessibilityTreeChildLimit,
+        allowedRange: accessibilityTreeChildLimitRange
+    )
     let wantsPress = parsed.flags.contains("--press") || parsed.flags.contains("--press-element")
     let wantsMenuBarPress = wantsPress && menuBarSelection != nil
     let wantsAccessibilityPress = wantsPress && !wantsMenuBarPress
@@ -1371,6 +1390,10 @@ func parse(arguments: [String]) throws -> CommandBehavior {
 
     if wantsAccessibilityWindowList, windowSelection != nil {
         throw RegionShotError.invalidArguments("`--list-accessibility-windows` cannot be combined with `--frontmost-window`, `--window-index`, or `--window-name`.")
+    }
+
+    if (parsed.values["--depth"] != nil || parsed.values["--max-children"] != nil), !wantsElementList {
+        throw RegionShotError.invalidArguments("`--depth` and `--max-children` require `--list-elements`.")
     }
 
     if wantsWindowList, windowSelection != nil {
@@ -1557,7 +1580,9 @@ func parse(arguments: [String]) throws -> CommandBehavior {
             AccessibilityCommand(
                 applicationSelector: applicationSelector!,
                 windowSelection: windowSelection,
-                mode: accessibilityMode
+                mode: accessibilityMode,
+                treeDepth: elementTreeDepth,
+                treeChildLimit: elementTreeChildLimit
             )
         )
     }
@@ -1630,7 +1655,7 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         case "--help", "-h", "--version", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--press", "--press-element", "--raise-window", "--raise", "--capture-menu", "--ascii-invert", "--ascii-no-ocr":
             flags.insert(argument)
             index += 1
-        case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
+        case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--depth", "--max-children", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
             let valueIndex = index + 1
             guard valueIndex < arguments.count else {
                 throw RegionShotError.invalidArguments("Missing value for \(argument).")
@@ -1885,6 +1910,24 @@ private func parseInteger(_ value: String, flag: String) throws -> Int {
     return integer
 }
 
+private func parseBoundedIntegerOption(
+    _ rawValue: String?,
+    flag: String,
+    defaultValue: Int,
+    allowedRange: ClosedRange<Int>
+) throws -> Int {
+    guard let rawValue else {
+        return defaultValue
+    }
+
+    let value = try parseInteger(rawValue, flag: flag)
+    guard allowedRange.contains(value) else {
+        throw RegionShotError.invalidArguments("`\(flag)` must be between \(allowedRange.lowerBound) and \(allowedRange.upperBound).")
+    }
+
+    return value
+}
+
 private func parseTimeout(_ rawValue: String?) throws -> TimeInterval {
     guard let rawValue else {
         return defaultScreenCaptureKitTimeout
@@ -2112,7 +2155,11 @@ private func inspectAccessibility(using command: AccessibilityCommand) async thr
         let response = AccessibilityTreeResponse(
             application: windowListApplication(for: catalog.application),
             window: accessibilityWindowEntry(for: selectedWindow),
-            tree: accessibilityElementResponse(for: accessibilityWindow, depthRemaining: 4)
+            tree: accessibilityElementResponse(
+                for: accessibilityWindow,
+                depthRemaining: command.treeDepth,
+                childLimit: command.treeChildLimit
+            )
         )
         return try encodeJSON(response)
     case .elementAt(let point):
