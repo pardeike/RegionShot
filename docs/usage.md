@@ -159,6 +159,7 @@ menu item by title, description, or identifier.
 ```bash
 regionshot --app "System Settings" --list-elements
 regionshot --app "System Settings" --list-elements --depth 2 --max-children 12
+regionshot --app "System Settings" --wait-for-window "Network" --timeout 10
 regionshot --app "System Settings" --get --role AXTextField --title Name
 regionshot --app "System Settings" --wait-for-element --role AXButton --title Done --timeout 10
 regionshot --app "System Settings" --set-value "Andreas" --role AXTextField --title Name
@@ -175,6 +176,10 @@ Element JSON includes structural fields plus readable state when macOS exposes
 it: `value`, `enabled`, `focused`, and `selected`.
 Use `--depth N` and `--max-children N` with `--list-elements` to reduce or
 expand the tree.
+
+`--wait-for-window TITLE` polls the app's accessibility windows until one title
+matches, then returns that window as JSON. Use `--timeout SECONDS` to adjust the
+wait.
 
 `--get` finds one accessibility element using selector fields and returns its
 full JSON attributes without performing an action. It uses the same selector

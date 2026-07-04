@@ -581,6 +581,52 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(selector.title, "Done")
     }
 
+    func testAccessibilityWaitForWindowParsingUsesTimeout() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--wait-for-window", "server logs",
+            "--timeout", "3.25",
+        ])
+
+        guard case .inspectAccessibility(let command) = behavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .waitForWindow(let title) = command.mode else {
+            return XCTFail("Expected accessibility wait-for-window mode.")
+        }
+
+        XCTAssertEqual(command.timeout, 3.25, accuracy: 0.001)
+        XCTAssertEqual(title, "server logs")
+        XCTAssertNil(command.windowSelection)
+    }
+
+    func testAccessibilityWaitForWindowRejectsEmptyTitle() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--wait-for-window", "  "])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--wait-for-window"))
+        }
+    }
+
+    func testAccessibilityWaitForWindowRejectsMixedAccessibilityMode() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--wait-for-window", "server logs", "--press-at", "1,1"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--wait-for-window"))
+            XCTAssertTrue(String(describing: error).contains("--press-at"))
+        }
+    }
+
+    func testAccessibilityWaitForWindowRejectsSeparateWindowSelection() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--window-name", "server logs", "--wait-for-window", "server logs"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--wait-for-window"))
+            XCTAssertTrue(String(describing: error).contains("--window-name"))
+        }
+    }
+
     func testAccessibilityWaitForElementRequiresSelector() {
         XCTAssertThrowsError(
             try parse(arguments: ["--app", "Terminal", "--wait-for-element"])
