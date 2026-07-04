@@ -962,13 +962,6 @@ private struct RunningApplicationMatch {
     let activationRank: Int
 }
 
-private struct ShareableApplicationMatch {
-    let application: SCRunningApplication
-    let score: Int
-    let visibleWindowCount: Int
-    let activationRank: Int
-}
-
 enum RegionShotError: LocalizedError, Sendable {
     case invalidArguments(String)
     case invalidInteger(flag: String, value: String)
@@ -5337,29 +5330,6 @@ private func applicationMatchSort(
     return left.application.processIdentifier < right.application.processIdentifier
 }
 
-private func shareableApplicationMatchSort(
-    _ left: ShareableApplicationMatch,
-    _ right: ShareableApplicationMatch
-) -> Bool {
-    if left.score != right.score {
-        return left.score < right.score
-    }
-
-    if left.visibleWindowCount != right.visibleWindowCount {
-        return left.visibleWindowCount > right.visibleWindowCount
-    }
-
-    if left.activationRank != right.activationRank {
-        return left.activationRank < right.activationRank
-    }
-
-    if left.application.applicationName != right.application.applicationName {
-        return left.application.applicationName.localizedCaseInsensitiveCompare(right.application.applicationName) == .orderedAscending
-    }
-
-    return left.application.processID < right.application.processID
-}
-
 private func runningApplicationSearchTexts(for application: NSRunningApplication) -> [String] {
     [
         application.localizedName,
@@ -7114,7 +7084,7 @@ private func loadShareableContent(
 }
 
 private func buildWindowCatalog(selector: ApplicationSelector, in shareableContent: SCShareableContent) throws -> AppWindowCatalog {
-    let application = try resolveApplication(selector: selector, in: shareableContent.applications)
+    let application = try resolveShareableApplication(selector: selector, in: shareableContent.applications)
     let eligibleWindows = shareableContent.windows.filter {
         $0.owningApplication?.processID == application.processID &&
         !$0.frame.isEmpty &&
@@ -7223,77 +7193,15 @@ private func currentWindowSnapshots() -> [WindowSnapshot] {
     }
 }
 
-private func resolveApplication(selector: ApplicationSelector, in applications: [SCRunningApplication]) throws -> SCRunningApplication {
-    switch selector {
-    case .processID(let processID):
-        guard let application = applications.first(where: { $0.processID == processID }) else {
-            throw RegionShotError.applicationNotFound("No shareable running application matches pid \(processID).")
-        }
-
-        return application
-    case .name(let query):
-        guard normalizedSelectorText(query) != nil else {
-            throw RegionShotError.invalidArguments("App selectors require a non-empty name, bundle id, or process id.")
-        }
-
-        let matches = rankedShareableApplicationMatches(
-            query: query,
-            applications: applications
+private func resolveShareableApplication(selector: ApplicationSelector, in applications: [SCRunningApplication]) throws -> SCRunningApplication {
+    let resolvedApplication = try resolveAutomationApplication(selector: selector)
+    guard let application = applications.first(where: { $0.processID == resolvedApplication.processID }) else {
+        throw RegionShotError.applicationNotFound(
+            "`\(resolvedApplication.name)` (pid \(resolvedApplication.processID)) is running but ScreenCaptureKit did not report it as shareable."
         )
-        guard !matches.isEmpty else {
-            throw RegionShotError.applicationNotFound("No shareable running application matches `\(query)`.")
-        }
-
-        let best = matches[0]
-        let equivalentMatches = matches.filter {
-            $0.score == best.score &&
-            $0.visibleWindowCount == best.visibleWindowCount &&
-            $0.activationRank == best.activationRank
-        }
-
-        guard equivalentMatches.count == 1, let match = equivalentMatches.first?.application else {
-            let suggestions = matches
-                .prefix(5)
-                .map { "\($0.application.applicationName) (pid \($0.application.processID), \($0.application.bundleIdentifier), visible windows \($0.visibleWindowCount))" }
-                .joined(separator: ", ")
-            throw RegionShotError.ambiguousApplication("More than one running application matches `\(query)`: \(suggestions)")
-        }
-
-        return match
     }
-}
 
-private func rankedShareableApplicationMatches(
-    query: String,
-    applications: [SCRunningApplication],
-    snapshots: [WindowSnapshot] = currentWindowSnapshots()
-) -> [ShareableApplicationMatch] {
-    applications
-        .compactMap { application -> ShareableApplicationMatch? in
-            guard let score = applicationSearchScore(
-                for: [
-                    application.applicationName,
-                    application.bundleIdentifier,
-                ],
-                query: query
-            ) else {
-                return nil
-            }
-
-            let visibleWindowCount = visibleWindows(
-                for: application.processID,
-                snapshots: snapshots
-            ).count
-            let activationPolicy = NSRunningApplication(processIdentifier: application.processID)?.activationPolicy
-
-            return ShareableApplicationMatch(
-                application: application,
-                score: score,
-                visibleWindowCount: visibleWindowCount,
-                activationRank: activationPolicyRank(activationPolicy)
-            )
-        }
-        .sorted(by: shareableApplicationMatchSort)
+    return application
 }
 
 private func selectWindow(from catalog: AppWindowCatalog, using selection: WindowSelection) throws -> CatalogWindow {
