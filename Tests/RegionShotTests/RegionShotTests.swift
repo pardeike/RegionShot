@@ -123,6 +123,74 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(command.outputURL.path, "/tmp/rimworld.png")
     }
 
+    func testExplicitPIDParsing() throws {
+        let behavior = try parse(arguments: [
+            "--pid", "12345",
+            "--list-windows",
+        ])
+
+        guard case .listWindows(let command) = behavior else {
+            return XCTFail("Expected list-windows behavior.")
+        }
+
+        guard case .processID(let processID) = command.applicationSelector else {
+            return XCTFail("Expected pid application selector.")
+        }
+
+        XCTAssertEqual(processID, 12345)
+    }
+
+    func testAppNameParsingForNumericNames() throws {
+        let behavior = try parse(arguments: [
+            "--app-name", "2048",
+            "--list-windows",
+        ])
+
+        guard case .listWindows(let command) = behavior else {
+            return XCTFail("Expected list-windows behavior.")
+        }
+
+        guard case .name(let name) = command.applicationSelector else {
+            return XCTFail("Expected name application selector.")
+        }
+
+        XCTAssertEqual(name, "2048")
+    }
+
+    func testNumericAppParsingKeepsPIDCompatibility() throws {
+        let behavior = try parse(arguments: [
+            "--app", "2048",
+            "--list-windows",
+        ])
+
+        guard case .listWindows(let command) = behavior else {
+            return XCTFail("Expected list-windows behavior.")
+        }
+
+        guard case .processID(let processID) = command.applicationSelector else {
+            return XCTFail("Expected pid application selector.")
+        }
+
+        XCTAssertEqual(processID, 2048)
+    }
+
+    func testAppSelectorParsingRejectsMixedSelectors() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--pid", "12345"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--app"))
+            XCTAssertTrue(String(describing: error).contains("--pid"))
+        }
+    }
+
+    func testPIDParsingRejectsNonPositiveValues() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--pid", "0", "--list-windows"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--pid"))
+        }
+    }
+
     func testScreenCaptureTimeoutParsing() throws {
         let behavior = try parse(arguments: [
             "--app", "Terminal",

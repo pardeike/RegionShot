@@ -34,12 +34,17 @@ Use this when you do not know the exact running app name. The output includes
 matching app names, process ids, bundle identifiers, paths, activation policy,
 and visible-window counts.
 
-`--app` accepts an app name, a bundle identifier, or a process id:
+`--app` accepts an app name, a bundle identifier, or a process id. Pure integer
+values keep the historical behavior and are treated as process ids. Use
+`--pid` for explicit process-id selection, or `--app-name` to force name/bundle
+matching when an app name is numeric:
 
 ```bash
 regionshot --app "System Settings"
 regionshot --app com.apple.systempreferences
 regionshot --app 12345
+regionshot --pid 12345
+regionshot --app-name "2048"
 ```
 
 ## Windows

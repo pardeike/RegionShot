@@ -696,6 +696,8 @@ Forms:
   regionshot X Y WIDTH HEIGHT [--app APP] [--output FILE]
   regionshot --x X --y Y --width WIDTH --height HEIGHT [--app APP] [--output FILE]
   regionshot --app APP [--timeout SECONDS]
+  regionshot --pid PID [--timeout SECONDS]
+  regionshot --app-name NAME [--timeout SECONDS]
   regionshot --app APP --frontmost-window [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS]
   regionshot --app APP --window-index N [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS]
   regionshot --app APP --window-name TITLE [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS]
@@ -730,7 +732,8 @@ Forms:
 
 Rules:
   `--version` prints the binary version and exits
-  `--app` accepts app name, bundle id, or pid
+  `--app` accepts app name, bundle id, or pid; pure integers are treated as pids for compatibility
+  use `--pid PID` to select by process id, or `--app-name NAME` to force name/bundle matching for numeric app names
   use `--find-app TEXT` when the exact running app name or pid is unknown
   `--ascii IMAGE` reads an existing screenshot/image and prints text-first layout ASCII plus OCR text
   `--ascii-style layout` is the default; use `--ascii-style tone` for the old luminance-ramp rendering
@@ -1178,7 +1181,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         return .showVersion
     }
 
-    let applicationSelector = parsed.values["--app"].map(ApplicationSelector.init(rawValue:))
+    let applicationSelector = try parseApplicationSelector(values: parsed.values)
     let findAppQuery = normalizedArgumentValue(parsed.values["--find-app"])
     let windowSelection = try parseWindowSelection(parsed)
     let windowCrop = try parseWindowCrop(parsed.values["--window-crop"])
@@ -1339,31 +1342,31 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     }
 
     if windowSelection != nil, applicationSelector == nil {
-        throw RegionShotError.invalidArguments("Window selection requires `--app <name-or-pid>`.")
+        throw RegionShotError.invalidArguments("Window selection requires an app selector (`--app`, `--app-name`, or `--pid`).")
     }
 
     if windowCrop != nil, applicationSelector == nil {
-        throw RegionShotError.invalidArguments("`--window-crop` requires `--app <name-or-pid>` and a specific window selection.")
+        throw RegionShotError.invalidArguments("`--window-crop` requires an app selector (`--app`, `--app-name`, or `--pid`) and a specific window selection.")
     }
 
     if wantsWindowList, applicationSelector == nil {
-        throw RegionShotError.invalidArguments("`--list-windows` requires `--app <name-or-pid>`.")
+        throw RegionShotError.invalidArguments("`--list-windows` requires an app selector (`--app`, `--app-name`, or `--pid`).")
     }
 
     if wantsVisibleWindowList, applicationSelector == nil {
-        throw RegionShotError.invalidArguments("`--list-visible-windows` requires `--app <name-or-pid>`.")
+        throw RegionShotError.invalidArguments("`--list-visible-windows` requires an app selector (`--app`, `--app-name`, or `--pid`).")
     }
 
     if wantsVisibleWindowCapture, applicationSelector == nil {
-        throw RegionShotError.invalidArguments("`--visible-window` requires `--app <name-or-pid>`.")
+        throw RegionShotError.invalidArguments("`--visible-window` requires an app selector (`--app`, `--app-name`, or `--pid`).")
     }
 
     if menuBarMode != nil, applicationSelector == nil {
-        throw RegionShotError.invalidArguments("Menu-bar inspection and actions require `--app <name-or-pid>`.")
+        throw RegionShotError.invalidArguments("Menu-bar inspection and actions require an app selector (`--app`, `--app-name`, or `--pid`).")
     }
 
     if accessibilityMode != nil, applicationSelector == nil {
-        throw RegionShotError.invalidArguments("Accessibility inspection and actions require `--app <name-or-pid>`.")
+        throw RegionShotError.invalidArguments("Accessibility inspection and actions require an app selector (`--app`, `--app-name`, or `--pid`).")
     }
 
     if wantsAccessibilityWindowList, windowSelection != nil {
@@ -1627,7 +1630,7 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         case "--help", "-h", "--version", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--press", "--press-element", "--raise-window", "--raise", "--capture-menu", "--ascii-invert", "--ascii-no-ocr":
             flags.insert(argument)
             index += 1
-        case "--x", "--y", "--width", "--height", "--output", "--app", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
+        case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
             let valueIndex = index + 1
             guard valueIndex < arguments.count else {
                 throw RegionShotError.invalidArguments("Missing value for \(argument).")
@@ -1641,6 +1644,46 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
     }
 
     return (values, flags)
+}
+
+func parseApplicationSelector(values: [String: String]) throws -> ApplicationSelector? {
+    let selectorKeys = ["--app", "--app-name", "--pid"]
+    let presentSelectorKeys = selectorKeys.filter { values[$0] != nil }
+
+    guard !presentSelectorKeys.isEmpty else {
+        return nil
+    }
+
+    guard presentSelectorKeys.count == 1 else {
+        throw RegionShotError.invalidArguments("Choose only one of `--app`, `--app-name`, or `--pid`.")
+    }
+
+    if let rawApp = values["--app"] {
+        guard let app = normalizedArgumentValue(rawApp) else {
+            throw RegionShotError.invalidArguments("`--app` requires a non-empty app name, bundle id, or pid.")
+        }
+
+        return ApplicationSelector(rawValue: app)
+    }
+
+    if let rawAppName = values["--app-name"] {
+        guard let appName = normalizedArgumentValue(rawAppName) else {
+            throw RegionShotError.invalidArguments("`--app-name` requires a non-empty app name or bundle id.")
+        }
+
+        return .name(appName)
+    }
+
+    guard let rawPID = values["--pid"] else {
+        return nil
+    }
+
+    let processID = try parseInteger(rawPID, flag: "--pid")
+    guard processID > 0, let pid = Int32(exactly: processID) else {
+        throw RegionShotError.invalidArguments("`--pid` requires a positive 32-bit process id.")
+    }
+
+    return .processID(pid)
 }
 
 private func parseFlaggedRegion(values: [String: String]) throws -> CaptureRegion? {
@@ -3568,7 +3611,7 @@ private func resolveAutomationApplication(selector: ApplicationSelector) throws 
         return automationApplication(from: application)
     case .name(let query):
         guard normalizedSelectorText(query) != nil else {
-            throw RegionShotError.invalidArguments("`--app` requires a non-empty name or process id.")
+            throw RegionShotError.invalidArguments("App selectors require a non-empty name, bundle id, or process id.")
         }
 
         let matches = rankedRunningApplicationMatches(
@@ -5063,7 +5106,7 @@ private func resolveApplication(selector: ApplicationSelector, in applications: 
         return application
     case .name(let query):
         guard normalizedSelectorText(query) != nil else {
-            throw RegionShotError.invalidArguments("`--app` requires a non-empty name or process id.")
+            throw RegionShotError.invalidArguments("App selectors require a non-empty name, bundle id, or process id.")
         }
 
         let matches = rankedShareableApplicationMatches(
