@@ -811,6 +811,61 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
+    func testMoveWindowParsingAllowsNegativeCoordinates() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--window-name", "server logs",
+            "--move-window", "-120,80",
+        ])
+
+        guard case .inspectAccessibility(let command) = behavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .moveWindow(let position) = command.mode else {
+            return XCTFail("Expected move-window mode.")
+        }
+
+        XCTAssertEqual(position.x, -120)
+        XCTAssertEqual(position.y, 80)
+    }
+
+    func testResizeWindowParsing() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--window-index", "1",
+            "--resize-window", "900,600",
+        ])
+
+        guard case .inspectAccessibility(let command) = behavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .resizeWindow(let size) = command.mode else {
+            return XCTFail("Expected resize-window mode.")
+        }
+
+        XCTAssertEqual(size.width, 900)
+        XCTAssertEqual(size.height, 600)
+    }
+
+    func testResizeWindowRejectsNonPositiveDimensions() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--resize-window", "900,0"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--resize-window"))
+        }
+    }
+
+    func testMoveAndResizeWindowRejectMixedAccessibilityMode() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--move-window", "10,20", "--resize-window", "900,600"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--move-window"))
+            XCTAssertTrue(String(describing: error).contains("--resize-window"))
+        }
+    }
+
     func testAsciiArtRejectsMixedModes() {
         XCTAssertThrowsError(
             try parse(arguments: ["--ascii", "/tmp/screenshot.png", "--app", "Terminal"])

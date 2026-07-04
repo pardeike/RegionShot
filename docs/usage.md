@@ -264,6 +264,8 @@ regionshot --app "Terminal" --window-name "server logs" --raise-window
 regionshot --app "Terminal" --window-name "server logs" --raise
 regionshot --app "Terminal" --window-name "server logs" --close-window
 regionshot --app "Terminal" --window-name "server logs" --minimize-window
+regionshot --app "Terminal" --window-name "server logs" --move-window 120,80
+regionshot --app "Terminal" --window-name "server logs" --resize-window 900,600
 ```
 
 `--list-accessibility-windows` lists windows through Accessibility instead of
@@ -286,6 +288,10 @@ window-selection rules.
 
 `--minimize-window` presses the selected AX window's minimize button using the
 same window-selection rules.
+
+`--move-window X,Y` sets the selected AX window's `AXPosition`; negative
+coordinates are allowed for multi-display layouts. `--resize-window W,H` sets
+the selected AX window's `AXSize`; width and height must be positive.
 
 ## Permissions
 

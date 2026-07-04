@@ -224,6 +224,24 @@ struct WindowPoint: Sendable {
     }
 }
 
+struct WindowPosition: Sendable {
+    let x: Int
+    let y: Int
+
+    var point: CGPoint {
+        CGPoint(x: x, y: y)
+    }
+}
+
+struct WindowSize: Sendable {
+    let width: Int
+    let height: Int
+
+    var size: CGSize {
+        CGSize(width: width, height: height)
+    }
+}
+
 struct AsciiArtOptions: Sendable {
     let width: Int
     let maxHeight: Int
@@ -306,6 +324,8 @@ enum AccessibilityMode: Sendable {
     case raiseWindow
     case closeWindow
     case minimizeWindow
+    case moveWindow(WindowPosition)
+    case resizeWindow(WindowSize)
 }
 
 enum MenuBarMode: Sendable {
@@ -554,6 +574,16 @@ private struct JSONPoint: Encodable {
     }
 }
 
+private struct JSONSize: Encodable {
+    let width: Double
+    let height: Double
+
+    init(_ size: CGSize) {
+        width = size.width
+        height = size.height
+    }
+}
+
 private struct AccessibilityTreeResponse: Encodable {
     let application: WindowListApplication
     let window: AccessibilityWindowEntry
@@ -637,6 +667,22 @@ private struct AccessibilityMinimizeWindowResponse: Encodable {
     let window: AccessibilityWindowEntry
     let action: String
     let target: AccessibilityElementResponse
+}
+
+private struct AccessibilityMoveWindowResponse: Encodable {
+    let application: WindowListApplication
+    let window: AccessibilityWindowEntry
+    let attribute: String
+    let position: JSONPoint
+    let updatedFrame: JSONRect?
+}
+
+private struct AccessibilityResizeWindowResponse: Encodable {
+    let application: WindowListApplication
+    let window: AccessibilityWindowEntry
+    let attribute: String
+    let size: JSONSize
+    let updatedFrame: JSONRect?
 }
 
 private struct AccessibilityWindowEntry: Encodable {
@@ -862,6 +908,8 @@ Forms:
   regionshot --app APP --raise-window [--window-index N | --window-name TITLE | --frontmost-window]
   regionshot --app APP --close-window [--window-index N | --window-name TITLE | --frontmost-window]
   regionshot --app APP --minimize-window [--window-index N | --window-name TITLE | --frontmost-window]
+  regionshot --app APP --move-window X,Y [--window-index N | --window-name TITLE | --frontmost-window]
+  regionshot --app APP --resize-window W,H [--window-index N | --window-name TITLE | --frontmost-window]
   regionshot --app APP --list-menu-bar-items
   regionshot --app APP --capture-menu [--output FILE]
   regionshot --app APP --menu-bar-index N --press
@@ -924,6 +972,7 @@ Rules:
   `--raise-window` (alias: `--raise`) activates the app and performs `AXRaise` on the selected AX window
   `--close-window` presses the selected AX window's close button
   `--minimize-window` presses the selected AX window's minimize button
+  `--move-window X,Y` sets AXPosition; `--resize-window W,H` sets AXSize
   ScreenCaptureKit app/window operations time out after 5 seconds by default; use `--timeout SECONDS` to adjust
   menu-bar item list JSON includes status-item/app-menu indices, roles, actions, and bounds
   `--capture-menu` opens the selected menu-bar item, captures the visible menu or popover, and closes it
@@ -1576,6 +1625,8 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     let wantsRaiseWindow = parsed.flags.contains("--raise-window") || parsed.flags.contains("--raise")
     let wantsCloseWindow = parsed.flags.contains("--close-window")
     let wantsMinimizeWindow = parsed.flags.contains("--minimize-window")
+    let windowPosition = try parseWindowPosition(parsed.values["--move-window"], flag: "--move-window")
+    let windowSize = try parseWindowSize(parsed.values["--resize-window"], flag: "--resize-window")
     let elementPoint = try parseWindowPoint(parsed.values["--element-at"], flag: "--element-at")
     let pressPoint = try parseWindowPoint(parsed.values["--press-at"], flag: "--press-at")
     let selector = parseAccessibilitySelector(from: parsed.values)
@@ -1661,22 +1712,23 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         return .findApps(FindAppsCommand(query: findAppQuery))
     }
 
-    let accessibilityModeCount = [
-        wantsAccessibilityWindowList ? 1 : 0,
-        wantsElementList ? 1 : 0,
-        elementPoint != nil ? 1 : 0,
-        wantsAccessibilityGet ? 1 : 0,
-        wantsAccessibilityWaitForElement ? 1 : 0,
-        wantsAccessibilitySetValue ? 1 : 0,
-        wantsAccessibilityPress ? 1 : 0,
-        pressPoint != nil ? 1 : 0,
-        wantsRaiseWindow ? 1 : 0,
-        wantsCloseWindow ? 1 : 0,
-        wantsMinimizeWindow ? 1 : 0,
-    ].reduce(0, +)
+    var accessibilityModeCount = 0
+    if wantsAccessibilityWindowList { accessibilityModeCount += 1 }
+    if wantsElementList { accessibilityModeCount += 1 }
+    if elementPoint != nil { accessibilityModeCount += 1 }
+    if wantsAccessibilityGet { accessibilityModeCount += 1 }
+    if wantsAccessibilityWaitForElement { accessibilityModeCount += 1 }
+    if wantsAccessibilitySetValue { accessibilityModeCount += 1 }
+    if wantsAccessibilityPress { accessibilityModeCount += 1 }
+    if pressPoint != nil { accessibilityModeCount += 1 }
+    if wantsRaiseWindow { accessibilityModeCount += 1 }
+    if wantsCloseWindow { accessibilityModeCount += 1 }
+    if wantsMinimizeWindow { accessibilityModeCount += 1 }
+    if windowPosition != nil { accessibilityModeCount += 1 }
+    if windowSize != nil { accessibilityModeCount += 1 }
 
     if accessibilityModeCount > 1 {
-        throw RegionShotError.invalidArguments("Choose only one of `--list-accessibility-windows`, `--list-elements`, `--element-at`, `--get`/`--get-element`, `--wait-for-element`, `--set-value`, `--press`/`--press-element`, `--press-at`, `--raise-window`, `--close-window`, or `--minimize-window`.")
+        throw RegionShotError.invalidArguments("Choose only one of `--list-accessibility-windows`, `--list-elements`, `--element-at`, `--get`/`--get-element`, `--wait-for-element`, `--set-value`, `--press`/`--press-element`, `--press-at`, `--raise-window`, `--close-window`, `--minimize-window`, `--move-window`, or `--resize-window`.")
     }
 
     let menuBarModeCount = [
@@ -1722,6 +1774,10 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         accessibilityMode = .closeWindow
     } else if wantsMinimizeWindow {
         accessibilityMode = .minimizeWindow
+    } else if let windowPosition {
+        accessibilityMode = .moveWindow(windowPosition)
+    } else if let windowSize {
+        accessibilityMode = .resizeWindow(windowSize)
     } else {
         accessibilityMode = nil
     }
@@ -2047,7 +2103,7 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         case "--help", "-h", "--version", "--doctor", "--list-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--get", "--get-element", "--wait-for-element", "--press", "--press-element", "--raise-window", "--raise", "--close-window", "--minimize-window", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only":
             flags.insert(argument)
             index += 1
-        case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--set-value", "--depth", "--max-children", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
+        case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--set-value", "--move-window", "--resize-window", "--depth", "--max-children", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
             let valueIndex = index + 1
             guard valueIndex < arguments.count else {
                 throw RegionShotError.invalidArguments("Missing value for \(argument).")
@@ -2292,6 +2348,50 @@ private func parseWindowPoint(_ rawValue: String?, flag: String) throws -> Windo
     }
 
     return point
+}
+
+private func parseWindowPosition(_ rawValue: String?, flag: String) throws -> WindowPosition? {
+    guard let rawValue else {
+        return nil
+    }
+
+    let components = rawValue
+        .split(separator: ",", omittingEmptySubsequences: false)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    guard components.count == 2 else {
+        throw RegionShotError.invalidArguments("`\(flag)` must use `x,y`.")
+    }
+
+    return try WindowPosition(
+        x: parseInteger(components[0], flag: flag),
+        y: parseInteger(components[1], flag: flag)
+    )
+}
+
+private func parseWindowSize(_ rawValue: String?, flag: String) throws -> WindowSize? {
+    guard let rawValue else {
+        return nil
+    }
+
+    let components = rawValue
+        .split(separator: ",", omittingEmptySubsequences: false)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    guard components.count == 2 else {
+        throw RegionShotError.invalidArguments("`\(flag)` must use `width,height`.")
+    }
+
+    let size = try WindowSize(
+        width: parseInteger(components[0], flag: flag),
+        height: parseInteger(components[1], flag: flag)
+    )
+
+    guard size.width > 0, size.height > 0 else {
+        throw RegionShotError.invalidArguments("`\(flag)` width and height must be greater than zero.")
+    }
+
+    return size
 }
 
 private func parseAccessibilitySelector(from values: [String: String]) -> AccessibilitySelector {
@@ -2775,6 +2875,26 @@ private func inspectAccessibility(using command: AccessibilityCommand) async thr
             window: accessibilityWindowEntry(for: selectedWindow),
             action: kAXPressAction as String,
             target: accessibilityElementResponse(for: minimizeButton, depthRemaining: 1)
+        )
+        return try encodeJSON(response)
+    case .moveWindow(let position):
+        try performSetWindowPosition(position, on: accessibilityWindow)
+        let response = AccessibilityMoveWindowResponse(
+            application: windowListApplication(for: catalog.application),
+            window: accessibilityWindowEntry(for: selectedWindow),
+            attribute: kAXPositionAttribute as String,
+            position: JSONPoint(position.point),
+            updatedFrame: copyAXFrame(from: accessibilityWindow).map(JSONRect.init)
+        )
+        return try encodeJSON(response)
+    case .resizeWindow(let size):
+        try performSetWindowSize(size, on: accessibilityWindow)
+        let response = AccessibilityResizeWindowResponse(
+            application: windowListApplication(for: catalog.application),
+            window: accessibilityWindowEntry(for: selectedWindow),
+            attribute: kAXSizeAttribute as String,
+            size: JSONSize(size.size),
+            updatedFrame: copyAXFrame(from: accessibilityWindow).map(JSONRect.init)
         )
         return try encodeJSON(response)
     }
@@ -5324,6 +5444,30 @@ private func performSetValue(_ value: String, on element: AXUIElement) throws {
     let error = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFString)
     guard error == .success else {
         throw RegionShotError.accessibilityQueryFailed("Failed to set `AXValue` on \(formatAXElement(element)) (AX error \(error.rawValue)).")
+    }
+}
+
+private func performSetWindowPosition(_ position: WindowPosition, on element: AXUIElement) throws {
+    var point = position.point
+    guard let value = AXValueCreate(.cgPoint, &point) else {
+        throw RegionShotError.accessibilityQueryFailed("Failed to create `AXPosition` value \(position.x),\(position.y).")
+    }
+
+    let error = AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value)
+    guard error == .success else {
+        throw RegionShotError.accessibilityQueryFailed("Failed to set `AXPosition` on \(formatAXElement(element)) (AX error \(error.rawValue)).")
+    }
+}
+
+private func performSetWindowSize(_ size: WindowSize, on element: AXUIElement) throws {
+    var cgSize = size.size
+    guard let value = AXValueCreate(.cgSize, &cgSize) else {
+        throw RegionShotError.accessibilityQueryFailed("Failed to create `AXSize` value \(size.width),\(size.height).")
+    }
+
+    let error = AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, value)
+    guard error == .success else {
+        throw RegionShotError.accessibilityQueryFailed("Failed to set `AXSize` on \(formatAXElement(element)) (AX error \(error.rawValue)).")
     }
 }
 
