@@ -49,11 +49,34 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
+    func testClipboardParsing() throws {
+        let readBehavior = try parse(arguments: ["clipboard"])
+        guard case .clipboard(let readCommand) = readBehavior else {
+            return XCTFail("Expected clipboard behavior.")
+        }
+        XCTAssertNil(readCommand.setText)
+
+        let setBehavior = try parse(arguments: ["clipboard", "--set", "hello"])
+        guard case .clipboard(let setCommand) = setBehavior else {
+            return XCTFail("Expected clipboard behavior.")
+        }
+        XCTAssertEqual(setCommand.setText, "hello")
+    }
+
+    func testClipboardParsingRejectsUnexpectedArguments() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["clipboard", "--bad"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("clipboard"))
+        }
+    }
+
     func testPassiveCommandsDoNotSynchronizeCodexIntegration() throws {
         XCTAssertFalse(try parse(arguments: []).shouldSynchronizeCodexIntegration)
         XCTAssertFalse(try parse(arguments: ["--help"]).shouldSynchronizeCodexIntegration)
         XCTAssertFalse(try parse(arguments: ["--version"]).shouldSynchronizeCodexIntegration)
         XCTAssertFalse(try parse(arguments: ["doctor"]).shouldSynchronizeCodexIntegration)
+        XCTAssertFalse(try parse(arguments: ["clipboard"]).shouldSynchronizeCodexIntegration)
     }
 
     func testOperationalCommandsSynchronizeCodexIntegration() throws {
@@ -651,6 +674,18 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(
             try encodeJSON(response),
             #"{"accessibility":false,"hostProcess":{"bundleIdentifier":"com.googlecode.iterm2","name":"iTerm2","processID":42},"screenRecording":true,"version":"1.2.3"}"#
+        )
+    }
+
+    func testClipboardResponseEncodesReadAndSetState() throws {
+        XCTAssertEqual(
+            try encodeJSON(ClipboardResponse(action: "read", text: "hello")),
+            #"{"action":"read","text":"hello"}"#
+        )
+
+        XCTAssertEqual(
+            try encodeJSON(ClipboardResponse(action: "read", text: nil)),
+            #"{"action":"read"}"#
         )
     }
 

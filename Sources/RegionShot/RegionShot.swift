@@ -25,6 +25,9 @@ struct RegionShot {
             case .doctor:
                 let json = try encodeJSON(currentDoctorStatus())
                 print(json)
+            case .clipboard(let command):
+                let json = try handleClipboard(using: command)
+                print(json)
             case .findApps(let command):
                 let json = try findApps(using: command)
                 print(json)
@@ -65,6 +68,7 @@ enum CommandBehavior: Sendable {
     case showHelp
     case showVersion
     case doctor
+    case clipboard(ClipboardCommand)
     case findApps(FindAppsCommand)
     case asciiArt(AsciiArtCommand)
     case capture(CaptureCommand)
@@ -76,7 +80,7 @@ enum CommandBehavior: Sendable {
 
     var shouldSynchronizeCodexIntegration: Bool {
         switch self {
-        case .showHelp, .showVersion, .doctor:
+        case .showHelp, .showVersion, .doctor, .clipboard:
             return false
         case .findApps, .asciiArt, .capture, .captureVisibleWindow, .listWindows, .listVisibleWindows, .inspectAccessibility, .menuBar:
             return true
@@ -95,6 +99,10 @@ struct CaptureCommand: Sendable {
 
 struct FindAppsCommand: Sendable {
     let query: String
+}
+
+struct ClipboardCommand: Sendable {
+    let setText: String?
 }
 
 struct AsciiArtCommand: Sendable {
@@ -389,6 +397,11 @@ struct DoctorHostProcess: Encodable, Equatable {
     let processID: Int32
     let name: String
     let bundleIdentifier: String?
+}
+
+struct ClipboardResponse: Encodable {
+    let action: String
+    let text: String?
 }
 
 private struct RunningApplicationEntry: Encodable {
@@ -715,6 +728,7 @@ Output:
 Forms:
   regionshot --version
   regionshot doctor
+  regionshot clipboard [--set TEXT]
   regionshot --find-app TEXT
   regionshot --ascii IMAGE [--ascii-style layout|tone] [--ascii-width N] [--ascii-max-height N] [--ascii-language CODE[,CODE...]] [--ascii-invert] [--ascii-no-ocr]
   regionshot X Y WIDTH HEIGHT [--app APP] [--output FILE]
@@ -757,6 +771,7 @@ Forms:
 Rules:
   `--version` prints the binary version and exits
   `doctor` prints non-prompting permission, version, and host-process JSON
+  `clipboard` reads or sets plain text on the general pasteboard and prints JSON
   `--app` accepts app name, bundle id, or pid; pure integers are treated as pids for compatibility
   use `--pid PID` to select by process id, or `--app-name NAME` to force name/bundle matching for numeric app names
   use `--find-app TEXT` when the exact running app name or pid is unknown
@@ -938,6 +953,26 @@ private func currentHostProcess() -> DoctorHostProcess {
         processID: parentProcessID,
         name: runningApplication?.localizedName ?? "pid \(parentProcessID)",
         bundleIdentifier: runningApplication?.bundleIdentifier
+    )
+}
+
+func handleClipboard(using command: ClipboardCommand) throws -> String {
+    let pasteboard = NSPasteboard.general
+
+    if let setText = command.setText {
+        pasteboard.clearContents()
+        guard pasteboard.setString(setText, forType: .string) else {
+            throw RegionShotError.captureFailed("Failed to write text to the clipboard.")
+        }
+
+        return try encodeJSON(ClipboardResponse(action: "set", text: setText))
+    }
+
+    return try encodeJSON(
+        ClipboardResponse(
+            action: "read",
+            text: pasteboard.string(forType: .string)
+        )
     )
 }
 
@@ -1236,6 +1271,10 @@ func parse(arguments: [String]) throws -> CommandBehavior {
             throw RegionShotError.invalidArguments("`doctor` does not accept additional arguments.")
         }
         return .doctor
+    }
+
+    if arguments.first == "clipboard" {
+        return .clipboard(try parseClipboardCommand(arguments: Array(arguments.dropFirst())))
     }
 
     let parsed = try parseRawArguments(arguments)
@@ -1737,6 +1776,18 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
     }
 
     return (values, flags)
+}
+
+func parseClipboardCommand(arguments: [String]) throws -> ClipboardCommand {
+    guard !arguments.isEmpty else {
+        return ClipboardCommand(setText: nil)
+    }
+
+    guard arguments.count == 2, arguments[0] == "--set" else {
+        throw RegionShotError.invalidArguments("`clipboard` accepts no arguments or `--set TEXT`.")
+    }
+
+    return ClipboardCommand(setText: arguments[1])
 }
 
 func parseApplicationSelector(values: [String: String]) throws -> ApplicationSelector? {

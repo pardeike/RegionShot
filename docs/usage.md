@@ -19,6 +19,15 @@ regionshot doctor
 Accessibility permission status, the RegionShot version, and the parent host
 process that macOS permissions apply to.
 
+## Clipboard
+
+```bash
+regionshot clipboard
+regionshot clipboard --set "copied text"
+```
+
+`clipboard` reads or sets plain text on the general pasteboard and prints JSON.
+
 ## Basic Capture
 
 ```bash
