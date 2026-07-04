@@ -28,6 +28,15 @@ regionshot clipboard --set "copied text"
 
 `clipboard` reads or sets plain text on the general pasteboard and prints JSON.
 
+## Displays
+
+```bash
+regionshot --list-displays
+```
+
+`--list-displays` prints compact JSON for active displays, including the display
+id, point frame, pixel size, scale, and whether the display is the main display.
+
 ## Basic Capture
 
 ```bash

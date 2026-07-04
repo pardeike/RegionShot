@@ -28,6 +28,9 @@ struct RegionShot {
             case .clipboard(let command):
                 let json = try handleClipboard(using: command)
                 print(json)
+            case .listDisplays:
+                let json = try listDisplays()
+                print(json)
             case .findApps(let command):
                 let json = try findApps(using: command)
                 print(json)
@@ -69,6 +72,7 @@ enum CommandBehavior: Sendable {
     case showVersion
     case doctor
     case clipboard(ClipboardCommand)
+    case listDisplays
     case findApps(FindAppsCommand)
     case asciiArt(AsciiArtCommand)
     case capture(CaptureCommand)
@@ -80,7 +84,7 @@ enum CommandBehavior: Sendable {
 
     var shouldSynchronizeCodexIntegration: Bool {
         switch self {
-        case .showHelp, .showVersion, .doctor, .clipboard:
+        case .showHelp, .showVersion, .doctor, .clipboard, .listDisplays:
             return false
         case .findApps, .asciiArt, .capture, .captureVisibleWindow, .listWindows, .listVisibleWindows, .inspectAccessibility, .menuBar:
             return true
@@ -415,6 +419,19 @@ struct DoctorHostProcess: Encodable, Equatable {
 struct ClipboardResponse: Encodable {
     let action: String
     let text: String?
+}
+
+struct DisplayListResponse: Encodable {
+    let displays: [DisplayEntry]
+}
+
+struct DisplayEntry: Encodable {
+    let id: UInt32
+    let frame: JSONRect
+    let pixelWidth: Int
+    let pixelHeight: Int
+    let scale: Double
+    let isMain: Bool
 }
 
 private struct RunningApplicationEntry: Encodable {
@@ -781,6 +798,7 @@ Forms:
   regionshot doctor
   regionshot clipboard [--set TEXT]
   regionshot --find-app TEXT
+  regionshot --list-displays
   regionshot --ascii IMAGE [--ascii-style layout|tone] [--ascii-width N] [--ascii-max-height N] [--ascii-language CODE[,CODE...]] [--ascii-invert] [--ascii-no-ocr] [--ocr-only]
   regionshot X Y WIDTH HEIGHT [--app APP] [--output FILE]
   regionshot --x X --y Y --width WIDTH --height HEIGHT [--app APP] [--output FILE]
@@ -831,6 +849,7 @@ Rules:
   `--version` prints the binary version and exits
   `doctor` prints non-prompting permission, version, and host-process JSON
   `clipboard` reads or sets plain text on the general pasteboard and prints JSON
+  `--list-displays` prints active display ids, point frames, pixel sizes, scale, and main-display status as JSON
   `--app` accepts app name, bundle id, or pid; pure integers are treated as pids for compatibility
   use `--pid PID` to select by process id, or `--app-name NAME` to force name/bundle matching for numeric app names
   use `--find-app TEXT` when the exact running app name or pid is unknown
@@ -1036,6 +1055,67 @@ func handleClipboard(using command: ClipboardCommand) throws -> String {
             text: pasteboard.string(forType: .string)
         )
     )
+}
+
+func listDisplays() throws -> String {
+    try encodeJSON(DisplayListResponse(displays: currentDisplayEntries()))
+}
+
+func currentDisplayEntries() -> [DisplayEntry] {
+    activeDisplayIDs()
+        .map(displayEntry(for:))
+        .sorted(by: displayEntrySort)
+}
+
+private func activeDisplayIDs() -> [CGDirectDisplayID] {
+    var displayCount: UInt32 = 0
+    guard CGGetActiveDisplayList(0, nil, &displayCount) == .success, displayCount > 0 else {
+        return []
+    }
+
+    var displayIDs = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
+    let error = displayIDs.withUnsafeMutableBufferPointer { buffer in
+        CGGetActiveDisplayList(displayCount, buffer.baseAddress, &displayCount)
+    }
+
+    guard error == .success else {
+        return []
+    }
+
+    return Array(displayIDs.prefix(Int(displayCount)))
+}
+
+private func displayEntry(for displayID: CGDirectDisplayID) -> DisplayEntry {
+    let frame = CGDisplayBounds(displayID)
+    let displayMode = CGDisplayCopyDisplayMode(displayID)
+    let pixelWidth = displayMode.map { Int($0.pixelWidth) } ?? Int(CGDisplayPixelsWide(displayID))
+    let pixelHeight = displayMode.map { Int($0.pixelHeight) } ?? Int(CGDisplayPixelsHigh(displayID))
+    let scale = frame.width > 0 ? Double(pixelWidth) / Double(frame.width) : 1
+
+    return DisplayEntry(
+        id: displayID,
+        frame: JSONRect(frame),
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+        scale: scale,
+        isMain: displayID == CGMainDisplayID()
+    )
+}
+
+private func displayEntrySort(_ left: DisplayEntry, _ right: DisplayEntry) -> Bool {
+    if left.isMain != right.isMain {
+        return left.isMain && !right.isMain
+    }
+
+    if left.frame.y != right.frame.y {
+        return left.frame.y < right.frame.y
+    }
+
+    if left.frame.x != right.frame.x {
+        return left.frame.x < right.frame.x
+    }
+
+    return left.id < right.id
 }
 
 private func synchronizeCodexIntegrationIfAvailable() {
@@ -1355,6 +1435,14 @@ func parse(arguments: [String]) throws -> CommandBehavior {
             throw RegionShotError.invalidArguments("`--doctor` cannot be combined with other arguments.")
         }
         return .doctor
+    }
+
+    if parsed.flags.contains("--list-displays") {
+        let hasOtherFlag = parsed.flags.contains { $0 != "--list-displays" }
+        if parsed.region != nil || !parsed.values.isEmpty || hasOtherFlag {
+            throw RegionShotError.invalidArguments("`--list-displays` cannot be combined with other arguments.")
+        }
+        return .listDisplays
     }
 
     let applicationSelector = try parseApplicationSelector(values: parsed.values)
@@ -1845,7 +1933,7 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         let argument = arguments[index]
 
         switch argument {
-        case "--help", "-h", "--version", "--doctor", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--get", "--get-element", "--press", "--press-element", "--raise-window", "--raise", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only":
+        case "--help", "-h", "--version", "--doctor", "--list-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--get", "--get-element", "--press", "--press-element", "--raise-window", "--raise", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only":
             flags.insert(argument)
             index += 1
         case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--set-value", "--depth", "--max-children", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":

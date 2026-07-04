@@ -71,12 +71,29 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
+    func testListDisplaysParsing() throws {
+        let behavior = try parse(arguments: ["--list-displays"])
+
+        guard case .listDisplays = behavior else {
+            return XCTFail("Expected list displays behavior.")
+        }
+    }
+
+    func testListDisplaysRejectsMixedArguments() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--list-displays", "--app", "Terminal"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--list-displays"))
+        }
+    }
+
     func testPassiveCommandsDoNotSynchronizeCodexIntegration() throws {
         XCTAssertFalse(try parse(arguments: []).shouldSynchronizeCodexIntegration)
         XCTAssertFalse(try parse(arguments: ["--help"]).shouldSynchronizeCodexIntegration)
         XCTAssertFalse(try parse(arguments: ["--version"]).shouldSynchronizeCodexIntegration)
         XCTAssertFalse(try parse(arguments: ["doctor"]).shouldSynchronizeCodexIntegration)
         XCTAssertFalse(try parse(arguments: ["clipboard"]).shouldSynchronizeCodexIntegration)
+        XCTAssertFalse(try parse(arguments: ["--list-displays"]).shouldSynchronizeCodexIntegration)
     }
 
     func testOperationalCommandsSynchronizeCodexIntegration() throws {
@@ -895,6 +912,26 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(
             try encodeJSON(ClipboardResponse(action: "read", text: nil)),
             #"{"action":"read"}"#
+        )
+    }
+
+    func testDisplayListResponseEncodesDisplayGeometry() throws {
+        let response = DisplayListResponse(
+            displays: [
+                DisplayEntry(
+                    id: 42,
+                    frame: JSONRect(CGRect(x: -100, y: 20, width: 800, height: 600)),
+                    pixelWidth: 1600,
+                    pixelHeight: 1200,
+                    scale: 2,
+                    isMain: true
+                ),
+            ]
+        )
+
+        XCTAssertEqual(
+            try encodeJSON(response),
+            #"{"displays":[{"frame":{"height":600,"width":800,"x":-100,"y":20},"id":42,"isMain":true,"pixelHeight":1200,"pixelWidth":1600,"scale":2}]}"#
         )
     }
 
