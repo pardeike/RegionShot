@@ -3307,7 +3307,7 @@ private func windowListApplication(for application: AutomationApplication) -> Wi
     )
 }
 
-private func windowlessApplicationMessage(
+func windowlessApplicationMessage(
     name: String,
     bundleIdentifier: String,
     processID: pid_t,

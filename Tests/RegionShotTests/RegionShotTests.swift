@@ -284,6 +284,35 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
+    func testWindowlessApplicationMessageIncludesRecoveryHintsAndBundleWhenAvailable() {
+        let message = windowlessApplicationMessage(
+            name: "Drafty",
+            bundleIdentifier: "com.example.Drafty",
+            processID: -12345,
+            windowKind: "visible",
+            modeDescription: "`--visible-window` only targets visible app windows."
+        )
+
+        XCTAssertTrue(message.contains("`Drafty` was found (pid -12345, com.example.Drafty)"))
+        XCTAssertTrue(message.contains("macOS exposed no visible windows"))
+        XCTAssertTrue(message.contains("`--visible-window` only targets visible app windows."))
+        XCTAssertTrue(message.contains("Use `--list-menu-bar-items` and `--capture-menu`"))
+        XCTAssertTrue(message.contains("rectangle capture (`regionshot X Y WIDTH HEIGHT`)"))
+    }
+
+    func testWindowlessApplicationMessageOmitsEmptyBundleIdentifier() {
+        let message = windowlessApplicationMessage(
+            name: "Untitled",
+            bundleIdentifier: "",
+            processID: -12345,
+            windowKind: "accessibility app",
+            modeDescription: "Accessibility modes operate inside app windows."
+        )
+
+        XCTAssertTrue(message.contains("`Untitled` was found (pid -12345)"))
+        XCTAssertFalse(message.contains("pid -12345, )"))
+    }
+
     func testScreenCaptureTimeoutParsing() throws {
         let behavior = try parse(arguments: [
             "--app", "Terminal",
