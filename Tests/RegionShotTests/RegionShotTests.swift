@@ -71,6 +71,51 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
+    func testActivateApplicationParsing() throws {
+        let behavior = try parse(arguments: ["activate", "--app", "Terminal"])
+
+        guard case .activateApplication(let command) = behavior else {
+            return XCTFail("Expected activate application behavior.")
+        }
+
+        guard case .name(let name) = command.applicationSelector else {
+            return XCTFail("Expected name application selector.")
+        }
+
+        XCTAssertEqual(name, "Terminal")
+    }
+
+    func testActivateApplicationParsingSupportsPID() throws {
+        let behavior = try parse(arguments: ["activate", "--pid", "123"])
+
+        guard case .activateApplication(let command) = behavior else {
+            return XCTFail("Expected activate application behavior.")
+        }
+
+        guard case .processID(let processID) = command.applicationSelector else {
+            return XCTFail("Expected pid application selector.")
+        }
+
+        XCTAssertEqual(processID, 123)
+    }
+
+    func testActivateApplicationRejectsMissingSelector() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["activate"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("activate"))
+            XCTAssertTrue(String(describing: error).contains("--app"))
+        }
+    }
+
+    func testActivateApplicationRejectsMixedArguments() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["activate", "--app", "Terminal", "--list-windows"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("activate"))
+        }
+    }
+
     func testListDisplaysParsing() throws {
         let behavior = try parse(arguments: ["--list-displays"])
 
@@ -98,6 +143,7 @@ final class RegionShotTests: XCTestCase {
 
     func testOperationalCommandsSynchronizeCodexIntegration() throws {
         XCTAssertTrue(try parse(arguments: ["--find-app", "RimWorld"]).shouldSynchronizeCodexIntegration)
+        XCTAssertTrue(try parse(arguments: ["activate", "--app", "Terminal"]).shouldSynchronizeCodexIntegration)
     }
 
     func testAsciiArtParsing() throws {

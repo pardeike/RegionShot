@@ -28,6 +28,17 @@ regionshot clipboard --set "copied text"
 
 `clipboard` reads or sets plain text on the general pasteboard and prints JSON.
 
+## Activate App
+
+```bash
+regionshot activate --app "System Settings"
+regionshot activate --pid 12345
+```
+
+`activate` resolves a running app by name, bundle id, or process id, asks macOS
+to activate it, and prints JSON describing the app and whether macOS accepted the
+activation request.
+
 ## Displays
 
 ```bash

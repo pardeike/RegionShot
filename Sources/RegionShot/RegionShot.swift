@@ -31,6 +31,9 @@ struct RegionShot {
             case .listDisplays:
                 let json = try listDisplays()
                 print(json)
+            case .activateApplication(let command):
+                let json = try activate(using: command)
+                print(json)
             case .findApps(let command):
                 let json = try findApps(using: command)
                 print(json)
@@ -73,6 +76,7 @@ enum CommandBehavior: Sendable {
     case doctor
     case clipboard(ClipboardCommand)
     case listDisplays
+    case activateApplication(ActivateApplicationCommand)
     case findApps(FindAppsCommand)
     case asciiArt(AsciiArtCommand)
     case capture(CaptureCommand)
@@ -86,10 +90,14 @@ enum CommandBehavior: Sendable {
         switch self {
         case .showHelp, .showVersion, .doctor, .clipboard, .listDisplays:
             return false
-        case .findApps, .asciiArt, .capture, .captureVisibleWindow, .listWindows, .listVisibleWindows, .inspectAccessibility, .menuBar:
+        case .activateApplication, .findApps, .asciiArt, .capture, .captureVisibleWindow, .listWindows, .listVisibleWindows, .inspectAccessibility, .menuBar:
             return true
         }
     }
+}
+
+struct ActivateApplicationCommand: Sendable {
+    let applicationSelector: ApplicationSelector
 }
 
 struct CaptureCommand: Sendable {
@@ -434,6 +442,11 @@ struct DisplayEntry: Encodable {
     let pixelHeight: Int
     let scale: Double
     let isMain: Bool
+}
+
+private struct ActivateApplicationResponse: Encodable {
+    let application: WindowListApplication
+    let activationRequestAccepted: Bool
 }
 
 private struct RunningApplicationEntry: Encodable {
@@ -799,6 +812,7 @@ Forms:
   regionshot --version
   regionshot doctor
   regionshot clipboard [--set TEXT]
+  regionshot activate --app APP
   regionshot --find-app TEXT
   regionshot --list-displays
   regionshot --ascii IMAGE [--ascii-style layout|tone] [--ascii-width N] [--ascii-max-height N] [--ascii-language CODE[,CODE...]] [--ascii-invert] [--ascii-no-ocr] [--ocr-only]
@@ -855,6 +869,7 @@ Rules:
   `--version` prints the binary version and exits
   `doctor` prints non-prompting permission, version, and host-process JSON
   `clipboard` reads or sets plain text on the general pasteboard and prints JSON
+  `activate --app APP` asks macOS to activate a running app and prints JSON
   `--list-displays` prints active display ids, point frames, pixel sizes, scale, and main-display status as JSON
   `--app` accepts app name, bundle id, or pid; pure integers are treated as pids for compatibility
   use `--pid PID` to select by process id, or `--app-name NAME` to force name/bundle matching for numeric app names
@@ -1066,6 +1081,17 @@ func handleClipboard(using command: ClipboardCommand) throws -> String {
 
 func listDisplays() throws -> String {
     try encodeJSON(DisplayListResponse(displays: currentDisplayEntries()))
+}
+
+func activate(using command: ActivateApplicationCommand) throws -> String {
+    let application = try resolveAutomationApplication(selector: command.applicationSelector)
+    let accepted = activateApplication(application)
+    return try encodeJSON(
+        ActivateApplicationResponse(
+            application: windowListApplication(for: application),
+            activationRequestAccepted: accepted
+        )
+    )
 }
 
 func currentDisplayEntries() -> [DisplayEntry] {
@@ -1424,6 +1450,10 @@ func parse(arguments: [String]) throws -> CommandBehavior {
 
     if arguments.first == "clipboard" {
         return .clipboard(try parseClipboardCommand(arguments: Array(arguments.dropFirst())))
+    }
+
+    if arguments.first == "activate" {
+        return .activateApplication(try parseActivateApplicationCommand(arguments: Array(arguments.dropFirst())))
     }
 
     let parsed = try parseRawArguments(arguments)
@@ -1978,6 +2008,22 @@ func parseClipboardCommand(arguments: [String]) throws -> ClipboardCommand {
     }
 
     return ClipboardCommand(setText: arguments[1])
+}
+
+func parseActivateApplicationCommand(arguments: [String]) throws -> ActivateApplicationCommand {
+    let parsed = try parseRawArguments(arguments)
+    let allowedValueKeys: Set<String> = ["--app", "--app-name", "--pid"]
+    let hasOtherValue = parsed.values.keys.contains { !allowedValueKeys.contains($0) }
+
+    if parsed.region != nil || hasOtherValue || !parsed.flags.isEmpty {
+        throw RegionShotError.invalidArguments("`activate` accepts only an app selector (`--app`, `--app-name`, or `--pid`).")
+    }
+
+    guard let applicationSelector = try parseApplicationSelector(values: parsed.values) else {
+        throw RegionShotError.invalidArguments("`activate` requires an app selector (`--app`, `--app-name`, or `--pid`).")
+    }
+
+    return ActivateApplicationCommand(applicationSelector: applicationSelector)
 }
 
 func parseApplicationSelector(values: [String: String]) throws -> ApplicationSelector? {
