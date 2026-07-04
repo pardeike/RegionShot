@@ -342,6 +342,7 @@ final class RegionShotTests: XCTestCase {
             "--app", "RimWorld",
             "--visible-window",
             "--output", "/tmp/rimworld.png",
+            "--timeout", "0.75",
         ])
 
         guard case .captureVisibleWindow(let command) = behavior else {
@@ -355,6 +356,7 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(name, "RimWorld")
         XCTAssertNil(command.windowSelection)
         XCTAssertEqual(command.outputURL.path, "/tmp/rimworld.png")
+        XCTAssertEqual(command.screenCaptureTimeout, 0.75, accuracy: 0.001)
     }
 
     func testExplicitPIDParsing() throws {
@@ -1280,11 +1282,11 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
-    func testScreenRegionCapturePreflightsBeforeLaunchingScreencapture() throws {
+    func testScreenRegionCapturePreflightsBeforeRunningDisplayCapture() async throws {
         let outputURL = URL(fileURLWithPath: "/tmp/regionshot-unit-test.png")
         var events: [String] = []
 
-        try captureScreenRegion(
+        try await captureScreenRegion(
             region: CaptureRegion(x: 1, y: 2, width: 3, height: 4),
             outputURL: outputURL,
             ensureAccess: {
@@ -1294,7 +1296,6 @@ final class RegionShotTests: XCTestCase {
                 events.append("capture")
                 XCTAssertEqual(region.rectangleArgument, "1,2,3,4")
                 XCTAssertEqual(url, outputURL)
-                return ScreenCaptureProcessResult(terminationStatus: 0, standardError: "")
             },
             fileExists: { path in
                 events.append("file-exists")
@@ -1306,12 +1307,12 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(events, ["preflight", "capture", "file-exists"])
     }
 
-    func testScreenRegionCaptureDoesNotLaunchScreencaptureWhenPreflightFails() {
+    func testScreenRegionCaptureDoesNotRunDisplayCaptureWhenPreflightFails() async {
         let outputURL = URL(fileURLWithPath: "/tmp/regionshot-unit-test.png")
         var events: [String] = []
 
-        XCTAssertThrowsError(
-            try captureScreenRegion(
+        await XCTAssertThrowsErrorAsync({
+            try await captureScreenRegion(
                 region: CaptureRegion(x: 1, y: 2, width: 3, height: 4),
                 outputURL: outputURL,
                 ensureAccess: {
@@ -1319,15 +1320,14 @@ final class RegionShotTests: XCTestCase {
                     throw RegionShotError.capturePermissionDenied
                 },
                 runCapture: { _, _ in
-                    XCTFail("screencapture should not run after preflight failure.")
-                    return ScreenCaptureProcessResult(terminationStatus: 0, standardError: "")
+                    XCTFail("display capture should not run after preflight failure.")
                 },
                 fileExists: { _ in
                     XCTFail("capture output should not be checked after preflight failure.")
                     return false
                 }
             )
-        ) { error in
+        }) { error in
             guard case RegionShotError.capturePermissionDenied = error else {
                 return XCTFail("Expected capturePermissionDenied, got \(error).")
             }
@@ -2062,6 +2062,20 @@ private func menuBarItem(
         childCount: 0,
         element: AXUIElementCreateApplication(123)
     )
+}
+
+private func XCTAssertThrowsErrorAsync<T>(
+    _ operation: () async throws -> T,
+    file: StaticString = #filePath,
+    line: UInt = #line,
+    _ errorHandler: (Error) -> Void = { _ in }
+) async {
+    do {
+        _ = try await operation()
+        XCTFail("Expected error to be thrown.", file: file, line: line)
+    } catch {
+        errorHandler(error)
+    }
 }
 
 private struct JSONFixture: Encodable {

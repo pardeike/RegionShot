@@ -51,7 +51,7 @@ struct RegionShot {
                 try await capture(using: command)
                 print(command.outputURL.path)
             case .captureVisibleWindow(let command):
-                try captureVisibleWindow(using: command)
+                try await captureVisibleWindow(using: command)
                 print(command.outputURL.path)
             case .listWindows(let command):
                 let json = try await listWindows(using: command)
@@ -163,6 +163,7 @@ struct VisibleWindowCaptureCommand: Sendable {
     let windowSelection: WindowSelection?
     let windowCrop: WindowCropRect?
     let outputURL: URL
+    let screenCaptureTimeout: TimeInterval
 }
 
 struct AccessibilityCommand: Sendable {
@@ -182,6 +183,7 @@ struct MenuBarCommand: Sendable {
     let selection: MenuBarSelection?
     let mode: MenuBarMode
     let outputURL: URL?
+    let screenCaptureTimeout: TimeInterval
 }
 
 struct MenuChildSelection: Sendable {
@@ -1043,7 +1045,7 @@ private let accessibilityTreeDepthRange = 0...12
 private let accessibilityTreeChildLimitRange = 1...200
 
 private let usageText = """
-regionshot = macOS screenshot wrapper around native `screencapture` and `ScreenCaptureKit`.
+regionshot = macOS screenshot wrapper around native `ScreenCaptureKit`.
 
 Output:
   capture mode -> writes a PNG file, then prints the final path to stdout
@@ -1070,7 +1072,7 @@ Forms:
   regionshot --app APP --window-index N [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS]
   regionshot --app APP --window-name TITLE [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS]
   regionshot --app APP --list-visible-windows
-  regionshot --app APP --visible-window [--window-index N | --window-name TITLE | --frontmost-window] [--window-crop X,Y,W,H] [--output FILE]
+  regionshot --app APP --visible-window [--window-index N | --window-name TITLE | --frontmost-window] [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS]
   regionshot --app APP --list-accessibility-windows
   regionshot --app APP --raise-window [--window-index N | --window-name TITLE | --frontmost-window]
   regionshot --app APP --close-window [--window-index N | --window-name TITLE | --frontmost-window]
@@ -1078,13 +1080,13 @@ Forms:
   regionshot --app APP --move-window X,Y [--window-index N | --window-name TITLE | --frontmost-window]
   regionshot --app APP --resize-window W,H [--window-index N | --window-name TITLE | --frontmost-window]
   regionshot --app APP --list-menu-bar-items
-  regionshot --app APP --capture-menu [--output FILE]
+  regionshot --app APP --capture-menu [--output FILE] [--timeout SECONDS]
   regionshot --app APP --menu-bar-index N --press
   regionshot --app APP --menu-bar-index N --press-menu-item TEXT
-  regionshot --app APP --menu-bar-index N --capture-menu [--output FILE]
+  regionshot --app APP --menu-bar-index N --capture-menu [--output FILE] [--timeout SECONDS]
   regionshot --app APP --menu-bar-item TEXT --press
   regionshot --app APP --menu-bar-item TEXT --press-menu-item TEXT
-  regionshot --app APP --menu-bar-item TEXT --capture-menu [--output FILE]
+  regionshot --app APP --menu-bar-item TEXT --capture-menu [--output FILE] [--timeout SECONDS]
   regionshot --app APP --list-elements [--depth N] [--max-children N] [--roles ROLE[,ROLE...]] [--interactive] [--flat]
   regionshot --app APP --wait-for-window TITLE [--timeout SECONDS]
   regionshot --app APP --get --path PATH
@@ -1145,7 +1147,7 @@ Rules:
   `--app` alone == inspect mode == same as `--list-windows`
   window list JSON includes frontmost-first indices, titles, and bounds
   `--visible-window` uses visible pixels from the current screen, including floating panels; occluding windows are included
-  `--list-visible-windows` and `--visible-window` use CGWindowList and do not depend on ScreenCaptureKit window capture
+  `--list-visible-windows` uses CGWindowList; `--visible-window` uses CGWindowList selection plus ScreenCaptureKit display capture
   `--list-accessibility-windows` lists AX windows, supported actions, focused/main state, and whether the app/window is frontmost
   `--raise-window` (alias: `--raise`) activates the app and performs `AXRaise` on the selected AX window
   `--close-window` presses the selected AX window's close button
@@ -1174,7 +1176,7 @@ Rules:
   use `--path PATH` to target a listed element directly; it cannot be combined with fuzzy selector fields
   capture and ScreenCaptureKit window listing require Screen Recording permission
   accessibility inspection and actions require Accessibility permission
-  rectangle mode without `--app` forwards to `screencapture -R`
+  rectangle mode without `--app` captures visible display pixels with ScreenCaptureKit
   rectangle mode with `--app` includes only that app, even if covered by other windows
   if ScreenCaptureKit app/window capture times out, try `--visible-window` for visible-pixel capture
   app/window modes target app windows; use menu-bar modes for status-item UI from accessory/background apps
@@ -2398,7 +2400,8 @@ func parse(arguments: [String]) throws -> CommandBehavior {
                 applicationSelector: applicationSelector!,
                 selection: menuBarSelection,
                 mode: menuBarMode,
-                outputURL: wantsCaptureMenu ? try outputURL(from: outputPath) : nil
+                outputURL: wantsCaptureMenu ? try outputURL(from: outputPath) : nil,
+                screenCaptureTimeout: screenCaptureTimeout
             )
         )
     }
@@ -2421,7 +2424,8 @@ func parse(arguments: [String]) throws -> CommandBehavior {
                 applicationSelector: applicationSelector!,
                 windowSelection: windowSelection,
                 windowCrop: windowCrop,
-                outputURL: try outputURL(from: outputPath)
+                outputURL: try outputURL(from: outputPath),
+                screenCaptureTimeout: screenCaptureTimeout
             )
         )
     }
@@ -3273,72 +3277,43 @@ private func capture(using command: CaptureCommand) async throws {
         throw RegionShotError.invalidArguments("Rectangle capture requires coordinates when no app is specified.")
     }
 
-    try captureScreenRegion(region: region, outputURL: command.outputURL)
-}
-
-private func captureScreenRegion(region: CaptureRegion, outputURL: URL) throws {
-    try captureScreenRegion(
+    try await captureScreenRegion(
         region: region,
-        outputURL: outputURL,
-        ensureAccess: ensureScreenCaptureAccess,
-        runCapture: runScreenCaptureProcess,
-        fileExists: { FileManager.default.fileExists(atPath: $0) }
+        outputURL: command.outputURL,
+        timeout: command.screenCaptureTimeout
     )
 }
 
-struct ScreenCaptureProcessResult {
-    let terminationStatus: Int32
-    let standardError: String
+private func captureScreenRegion(
+    region: CaptureRegion,
+    outputURL: URL,
+    timeout: TimeInterval = defaultScreenCaptureKitTimeout
+) async throws {
+    try await captureScreenRegion(
+        region: region,
+        outputURL: outputURL,
+        ensureAccess: ensureScreenCaptureAccess,
+        runCapture: { region, outputURL in
+            try await captureDisplayRegion(region: region, outputURL: outputURL, timeout: timeout)
+        },
+        fileExists: { FileManager.default.fileExists(atPath: $0) }
+    )
 }
 
 func captureScreenRegion(
     region: CaptureRegion,
     outputURL: URL,
     ensureAccess: () throws -> Void,
-    runCapture: (CaptureRegion, URL) throws -> ScreenCaptureProcessResult,
+    runCapture: (CaptureRegion, URL) async throws -> Void,
     fileExists: (String) -> Bool
-) throws {
+) async throws {
     try ensureAccess()
 
-    let result = try runCapture(region, outputURL)
-
-    guard result.terminationStatus == 0 else {
-        let errorText = result.standardError.trimmingCharacters(in: .whitespacesAndNewlines)
-        let message = errorText.isEmpty ? "screencapture exited with status \(result.terminationStatus)." : errorText
-        throw RegionShotError.captureFailed(message)
-    }
+    try await runCapture(region, outputURL)
 
     guard fileExists(outputURL.path) else {
         throw RegionShotError.captureFailed("Capture succeeded but no PNG was written to \(outputURL.path).")
     }
-}
-
-private func runScreenCaptureProcess(region: CaptureRegion, outputURL: URL) throws -> ScreenCaptureProcessResult {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-    process.arguments = [
-        "-x",
-        "-t",
-        "png",
-        "-R\(region.rectangleArgument)",
-        outputURL.path,
-    ]
-
-    let standardError = Pipe()
-    process.standardError = standardError
-
-    try process.run()
-    process.waitUntilExit()
-
-    let standardErrorText = String(
-        decoding: standardError.fileHandleForReading.readDataToEndOfFile(),
-        as: UTF8.self
-    )
-
-    return ScreenCaptureProcessResult(
-        terminationStatus: process.terminationStatus,
-        standardError: standardErrorText
-    )
 }
 
 private func listWindows(using command: ListWindowsCommand) async throws -> String {
@@ -3770,7 +3745,12 @@ private func handleMenuBar(using command: MenuBarCommand) async throws -> String
         let outputURL = command.outputURL ?? temporaryOutputURL()
         let directoryURL = outputURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-        try captureMenuBarSurface(surface, item: item, outputURL: outputURL)
+        try await captureMenuBarSurface(
+            surface,
+            item: item,
+            outputURL: outputURL,
+            timeout: command.screenCaptureTimeout
+        )
         return outputURL.path
     }
 }
@@ -3804,7 +3784,7 @@ private func listVisibleWindows(using command: VisibleWindowsCommand) throws -> 
     return try encodeJSON(response)
 }
 
-private func captureVisibleWindow(using command: VisibleWindowCaptureCommand) throws {
+private func captureVisibleWindow(using command: VisibleWindowCaptureCommand) async throws {
     let directoryURL = command.outputURL.deletingLastPathComponent()
     try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
 
@@ -3813,7 +3793,11 @@ private func captureVisibleWindow(using command: VisibleWindowCaptureCommand) th
     let region = try captureRegion(forVisibleWindow: window, crop: command.windowCrop)
 
     do {
-        try captureScreenRegion(region: region, outputURL: command.outputURL)
+        try await captureScreenRegion(
+            region: region,
+            outputURL: command.outputURL,
+            timeout: command.screenCaptureTimeout
+        )
     } catch RegionShotError.captureFailed(let message) {
         throw RegionShotError.captureFailed("Failed to capture visible window [\(window.index)] \(displayTitle(window.title)) for `\(catalog.application.name)` at `\(region.rectangleArgument)`: \(message)")
     }
@@ -6521,8 +6505,9 @@ private func pressEscapeKey(inProcess processID: pid_t) {
 private func captureMenuBarSurface(
     _ surface: MenuBarSurface,
     item: MenuBarCatalogItem,
-    outputURL: URL
-) throws {
+    outputURL: URL,
+    timeout: TimeInterval
+) async throws {
     let stableFrame = waitForStableMenuBarSurfaceFrame(
         initialFrame: menuBarSurfaceFrame(surface),
         readFrame: { menuBarSurfaceFrame(surface) }
@@ -6530,7 +6515,7 @@ private func captureMenuBarSurface(
     let region = try captureRegion(forMenuFrame: stableFrame, item: item)
 
     do {
-        try captureScreenRegion(region: region, outputURL: outputURL)
+        try await captureScreenRegion(region: region, outputURL: outputURL, timeout: timeout)
     } catch RegionShotError.captureFailed(let message) {
         throw RegionShotError.captureFailed("Failed to capture \(surface.kind) for \(formatMenuBarCandidate(item)) at `\(region.rectangleArgument)`: \(message)")
     }
@@ -7083,6 +7068,18 @@ private func loadShareableContent(
     )
 }
 
+private func loadDisplayShareableContent(timeout: TimeInterval) async throws -> SCShareableContent {
+    return try await withTimeout(
+        seconds: timeout,
+        timeoutMessage: {
+            "ScreenCaptureKit did not return display content within \(formatSeconds(timeout)). If ScreenCaptureKit is only slow, retry with `--timeout SECONDS`."
+        },
+        operation: {
+            try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+        }
+    )
+}
+
 private func buildWindowCatalog(selector: ApplicationSelector, in shareableContent: SCShareableContent) throws -> AppWindowCatalog {
     let application = try resolveShareableApplication(selector: selector, in: shareableContent.applications)
     let eligibleWindows = shareableContent.windows.filter {
@@ -7288,6 +7285,85 @@ private func captureWindow(
     try writePNG(image: finalImage, to: outputURL)
 }
 
+private func captureDisplayRegion(
+    region: CaptureRegion,
+    outputURL: URL,
+    timeout: TimeInterval
+) async throws {
+    try validate(region: region)
+    let shareableContent = try await loadDisplayShareableContent(timeout: timeout)
+    let regionRect = region.rect
+    let plans = planDisplayRegionCaptures(displays: shareableContent.displays, regionRect: regionRect)
+
+    guard !plans.isEmpty else {
+        throw RegionShotError.captureFailed("No display intersects the requested rectangle \(region.rectangleArgument).")
+    }
+
+    let canvasScale = max(1, plans.map(\.pointPixelScale).max() ?? 1)
+    let canvasSize = CGSize(
+        width: max(1, ceil(regionRect.width * canvasScale)),
+        height: max(1, ceil(regionRect.height * canvasScale))
+    )
+
+    guard
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+        let context = CGContext(
+            data: nil,
+            width: Int(canvasSize.width),
+            height: Int(canvasSize.height),
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+    else {
+        throw RegionShotError.captureFailed("Failed to allocate an image buffer for the display capture.")
+    }
+
+    context.translateBy(x: 0, y: canvasSize.height)
+    context.scaleBy(x: 1, y: -1)
+
+    for plan in plans {
+        let filter = SCContentFilter(display: plan.display, excludingWindows: [])
+        let configuration = SCStreamConfiguration()
+        configuration.width = max(1, Int(ceil(plan.intersectionRect.width * plan.pointPixelScale)))
+        configuration.height = max(1, Int(ceil(plan.intersectionRect.height * plan.pointPixelScale)))
+        configuration.sourceRect = CGRect(
+            x: plan.intersectionRect.minX - plan.display.frame.minX,
+            y: plan.intersectionRect.minY - plan.display.frame.minY,
+            width: plan.intersectionRect.width,
+            height: plan.intersectionRect.height
+        )
+        configuration.scalesToFit = true
+        configuration.showsCursor = false
+        configuration.ignoreShadowsDisplay = true
+
+        let image = try await withTimeout(
+            seconds: timeout,
+            timeoutMessage: {
+                "ScreenCaptureKit did not capture display rectangle \(region.rectangleArgument) within \(formatSeconds(timeout)). If ScreenCaptureKit is only slow, retry with `--timeout SECONDS`."
+            },
+            operation: {
+                try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+            }
+        )
+        let destinationRect = CGRect(
+            x: (plan.intersectionRect.minX - regionRect.minX) * canvasScale,
+            y: (plan.intersectionRect.minY - regionRect.minY) * canvasScale,
+            width: plan.intersectionRect.width * canvasScale,
+            height: plan.intersectionRect.height * canvasScale
+        )
+
+        context.draw(image, in: destinationRect)
+    }
+
+    guard let image = context.makeImage() else {
+        throw RegionShotError.captureFailed("ScreenCaptureKit returned no image data for the display capture.")
+    }
+
+    try writePNG(image: image, to: outputURL)
+}
+
 private func captureApplicationRegion(
     application: SCRunningApplication,
     windows: [SCWindow],
@@ -7378,6 +7454,24 @@ private func captureApplicationRegion(
     }
 
     try writePNG(image: image, to: outputURL)
+}
+
+private func planDisplayRegionCaptures(
+    displays: [SCDisplay],
+    regionRect: CGRect
+) -> [DisplayCapturePlan] {
+    displays.compactMap { display in
+        let intersectionRect = display.frame.intersection(regionRect)
+        guard !intersectionRect.isNull, !intersectionRect.isEmpty else {
+            return nil
+        }
+
+        return DisplayCapturePlan(
+            display: display,
+            intersectionRect: intersectionRect,
+            pointPixelScale: pointPixelScale(for: display)
+        )
+    }
 }
 
 private func planDisplayCaptures(

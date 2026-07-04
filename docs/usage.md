@@ -69,8 +69,8 @@ regionshot --x 120 --y 240 --width 800 --height 600
 regionshot 120 240 800 600 --output ~/Desktop/region.png
 ```
 
-Without `--app`, rectangle capture is forwarded to the system
-`/usr/sbin/screencapture` tool.
+Without `--app`, rectangle capture uses ScreenCaptureKit display capture for
+the visible pixels in that screen region.
 
 By default, capture commands create a temporary file and print the path.
 
@@ -122,9 +122,10 @@ regionshot --app "Drafty" --visible-window --output ~/Desktop/drafty-panel.png
 ```
 
 `--list-visible-windows` and `--visible-window` use the current visible window
-stack instead of app/window capture. This is useful when system app/window
-capture is unavailable, times out, or when visible pixels are exactly what you
-need.
+stack instead of ScreenCaptureKit's app/window catalog. Visible-window capture
+then captures that screen rectangle with ScreenCaptureKit display capture. This
+is useful when app/window capture is unavailable, times out, or when visible
+pixels are exactly what you need.
 
 Visible-window modes include normal windows and app-owned floating panels. They
 capture what is visible in that rectangle, so windows in front of the target are
