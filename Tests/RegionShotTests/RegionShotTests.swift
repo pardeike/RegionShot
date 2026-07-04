@@ -23,6 +23,14 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
+    func testVersionRejectsMixedArguments() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--version", "--raw"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--version"))
+        }
+    }
+
     func testDoctorParsing() throws {
         let subcommandBehavior = try parse(arguments: ["doctor"])
         guard case .doctor = subcommandBehavior else {
@@ -343,6 +351,7 @@ final class RegionShotTests: XCTestCase {
             "--visible-window",
             "--output", "/tmp/rimworld.png",
             "--timeout", "0.75",
+            "--raw",
         ])
 
         guard case .captureVisibleWindow(let command) = behavior else {
@@ -357,6 +366,31 @@ final class RegionShotTests: XCTestCase {
         XCTAssertNil(command.windowSelection)
         XCTAssertEqual(command.outputURL.path, "/tmp/rimworld.png")
         XCTAssertEqual(command.screenCaptureTimeout, 0.75, accuracy: 0.001)
+        XCTAssertTrue(command.rawOutput)
+    }
+
+    func testRectangleCaptureParsingSupportsRawOutput() throws {
+        let behavior = try parse(arguments: [
+            "1",
+            "2",
+            "3",
+            "4",
+            "--raw",
+        ])
+
+        guard case .capture(let command) = behavior else {
+            return XCTFail("Expected capture behavior.")
+        }
+
+        XCTAssertTrue(command.rawOutput)
+    }
+
+    func testRawOutputRejectsStructuredModes() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--list-windows", "--raw"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--raw"))
+        }
     }
 
     func testExplicitPIDParsing() throws {
@@ -1349,6 +1383,30 @@ final class RegionShotTests: XCTestCase {
         XCTAssertFalse(json.contains("\n"))
     }
 
+    func testSuccessEnvelopeEncodingWrapsModePayloads() throws {
+        XCTAssertEqual(
+            try dataEnvelopeJSON(mode: "doctor", dataJSON: #"{"screenRecording":true}"#, version: "1.2.3"),
+            #"{"data":{"screenRecording":true},"mode":"doctor","ok":true,"version":"1.2.3"}"#
+        )
+
+        XCTAssertEqual(
+            try outputEnvelopeJSON(mode: "capture", output: "/tmp/region.png", version: "1.2.3"),
+            #"{"mode":"capture","ok":true,"output":"/tmp/region.png","version":"1.2.3"}"#
+        )
+
+        XCTAssertEqual(
+            try reportEnvelopeJSON(mode: "ascii", report: "layout\ntext", version: "1.2.3"),
+            #"{"mode":"ascii","ok":true,"report":"layout\ntext","version":"1.2.3"}"#
+        )
+    }
+
+    func testErrorEnvelopeEncodingIncludesKindMessageAndExitCode() throws {
+        XCTAssertEqual(
+            try errorEnvelopeJSON(error: .ambiguousWindow("Choose one."), version: "1.2.3"),
+            #"{"error":{"exitCode":65,"kind":"ambiguousWindow","message":"Choose one."},"ok":false,"version":"1.2.3"}"#
+        )
+    }
+
     func testRegionShotErrorExitCodesDistinguishActionableFailureFamilies() {
         let expectations: [(RegionShotError, Int32)] = [
             (.invalidArguments("bad flag"), 64),
@@ -1784,7 +1842,7 @@ final class RegionShotTests: XCTestCase {
 
         XCTAssertEqual(
             json,
-            #"{"blocks":[{"bounds":{"height":8,"width":40,"x":5,"y":10},"confidence":0.93,"text":"Top"},{"bounds":{"height":14,"width":60,"x":10,"y":100},"confidence":0.8,"text":"Bottom"}],"image":{"height":100,"path":"\/tmp\/screenshot.png","width":200}}"#
+            #"{"blocks":[{"bounds":{"height":8,"width":40,"x":5,"y":10},"confidence":0.93,"text":"Top"},{"bounds":{"height":14,"width":60,"x":10,"y":100},"confidence":0.8,"text":"Bottom"}],"image":{"height":100,"path":"/tmp/screenshot.png","width":200}}"#
         )
     }
 

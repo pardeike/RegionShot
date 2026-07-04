@@ -3,6 +3,17 @@
 This page lists the main command forms. Run `regionshot --help` for the exact
 help text from the installed binary.
 
+## Output
+
+Commands return compact JSON envelopes on stdout by default. Successful
+responses include `ok`, `mode`, `version`, and one mode-specific field:
+`data` for structured inspection/action results, `output` for a written capture
+file, or `report` for ASCII report text. Errors are compact JSON envelopes on
+stderr with `error.kind`, `error.message`, and `error.exitCode`.
+
+Add `--raw` to capture, menu-capture, or ASCII commands when a script needs the
+legacy bare path or report output.
+
 ## Version
 
 ```bash
@@ -15,9 +26,9 @@ regionshot --version
 regionshot doctor
 ```
 
-`doctor` prints compact JSON with non-prompting Screen Recording and
-Accessibility permission status, the RegionShot version, and the parent host
-process that macOS permissions apply to.
+`doctor` returns non-prompting Screen Recording and Accessibility permission
+status, the RegionShot version, and the parent host process that macOS
+permissions apply to.
 
 ## Clipboard
 
@@ -26,7 +37,8 @@ regionshot clipboard
 regionshot clipboard --set "copied text"
 ```
 
-`clipboard` reads or sets plain text on the general pasteboard and prints JSON.
+`clipboard` reads or sets plain text on the general pasteboard and returns the
+clipboard payload as `data`.
 
 ## App Lifecycle
 
@@ -40,15 +52,15 @@ regionshot quit --pid 12345 --force
 ```
 
 `activate` resolves a running app by name, bundle id, or process id, asks macOS
-to activate it, and prints JSON describing the app and whether macOS accepted the
-activation request.
+to activate it, and returns data describing the app and whether macOS accepted
+the activation request.
 
 `launch` starts an app bundle path, bundle id, or executable path. Add
 `--wait-window` to wait until the launched process exposes its first accessibility
 window. Arguments after `--args` are passed to the launched app unchanged.
 
 `quit` resolves a running app and asks it to terminate. Add `--force` to call
-force-terminate instead. The command prints JSON describing the app and whether
+force-terminate instead. The command returns data describing the app and whether
 macOS accepted the termination request.
 
 ## Displays
@@ -57,8 +69,8 @@ macOS accepted the termination request.
 regionshot --list-displays
 ```
 
-`--list-displays` prints compact JSON for active displays, including the display
-id, point frame, pixel size, scale, and whether the display is the main display.
+`--list-displays` returns active displays, including the display id, point
+frame, pixel size, scale, and whether the display is the main display.
 
 ## Basic Capture
 
@@ -67,12 +79,14 @@ regionshot
 regionshot 120 240 800 600
 regionshot --x 120 --y 240 --width 800 --height 600
 regionshot 120 240 800 600 --output ~/Desktop/region.png
+regionshot 120 240 800 600 --raw
 ```
 
 Without `--app`, rectangle capture uses ScreenCaptureKit display capture for
 the visible pixels in that screen region.
 
-By default, capture commands create a temporary file and print the path.
+By default, capture commands create a temporary file and return its path as
+`output`. Add `--raw` to print only the path.
 
 ## Find Apps
 
@@ -239,7 +253,7 @@ instead of pressing an arbitrary element.
 deepest visible element at a window-relative point, walks up to the nearest
 ancestor that supports `AXPress`, and presses that element.
 
-`--element-at x,y` prints JSON for the visible accessibility element at a
+`--element-at x,y` returns data for the visible accessibility element at a
 window-relative point plus its ancestor chain.
 
 ## ASCII And OCR View
@@ -250,10 +264,11 @@ regionshot --ascii /tmp/screenshot.png --ascii-width 160 --ascii-max-height 80
 regionshot --ascii /tmp/screenshot.png --ascii-style tone --ascii-width 100 --ascii-max-height 60
 regionshot --ascii /tmp/screenshot.png --ascii-language de-DE,sv-SE
 regionshot --ascii /tmp/screenshot.png --ocr-only
+regionshot --ascii /tmp/screenshot.png --raw
 ```
 
-`--ascii IMAGE` reads an existing screenshot or image file and prints a compact
-text inspection report.
+`--ascii IMAGE` reads an existing screenshot or image file and returns a compact
+text inspection report as `report`. Add `--raw` to print only the report text.
 
 The default `layout` style renders sparse borders, dividers, and scrollbars,
 then overlays Vision OCR text at approximate screenshot positions. The OCR
@@ -271,8 +286,8 @@ Useful options:
 - `--ascii-no-ocr`
 - `--ocr-only`
 
-`--ocr-only` skips ASCII rendering and returns JSON OCR blocks with pixel
-bounds, which is cheaper when text is the only needed signal.
+`--ocr-only` skips ASCII rendering and returns OCR blocks with pixel bounds as
+`data`, which is cheaper when text is the only needed signal.
 
 ## Timeouts
 

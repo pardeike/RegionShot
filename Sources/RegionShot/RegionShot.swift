@@ -22,56 +22,87 @@ struct RegionShot {
             case .showHelp:
                 print(usageText)
             case .showVersion:
-                print("regionshot \(currentRegionShotVersion())")
+                print(try basicEnvelopeJSON(mode: "version"))
             case .doctor:
                 let json = try encodeJSON(currentDoctorStatus())
-                print(json)
+                print(try dataEnvelopeJSON(mode: "doctor", dataJSON: json))
             case .clipboard(let command):
                 let json = try handleClipboard(using: command)
-                print(json)
+                print(try dataEnvelopeJSON(mode: "clipboard", dataJSON: json))
             case .listDisplays:
                 let json = try listDisplays()
-                print(json)
+                print(try dataEnvelopeJSON(mode: "displays", dataJSON: json))
             case .activateApplication(let command):
                 let json = try activate(using: command)
-                print(json)
+                print(try dataEnvelopeJSON(mode: "activate", dataJSON: json))
             case .launchApplication(let command):
                 let json = try launch(using: command)
-                print(json)
+                print(try dataEnvelopeJSON(mode: "launch", dataJSON: json))
             case .quitApplication(let command):
                 let json = try quit(using: command)
-                print(json)
+                print(try dataEnvelopeJSON(mode: "quit", dataJSON: json))
             case .findApps(let command):
                 let json = try findApps(using: command)
-                print(json)
+                print(try dataEnvelopeJSON(mode: "find-app", dataJSON: json))
             case .asciiArt(let command):
                 let text = try await asciiArtReport(using: command)
-                print(text)
+                if command.rawOutput {
+                    print(text)
+                } else if command.outputMode == .ocrOnly {
+                    print(try dataEnvelopeJSON(mode: "ocr", dataJSON: text))
+                } else {
+                    print(try reportEnvelopeJSON(mode: "ascii", report: text))
+                }
             case .capture(let command):
                 try await capture(using: command)
-                print(command.outputURL.path)
+                if command.rawOutput {
+                    print(command.outputURL.path)
+                } else {
+                    print(try outputEnvelopeJSON(mode: "capture", output: command.outputURL.path))
+                }
             case .captureVisibleWindow(let command):
                 try await captureVisibleWindow(using: command)
-                print(command.outputURL.path)
+                if command.rawOutput {
+                    print(command.outputURL.path)
+                } else {
+                    print(try outputEnvelopeJSON(mode: "visible-window", output: command.outputURL.path))
+                }
             case .listWindows(let command):
                 let json = try await listWindows(using: command)
-                print(json)
+                print(try dataEnvelopeJSON(mode: "windows", dataJSON: json))
             case .listVisibleWindows(let command):
                 let json = try listVisibleWindows(using: command)
-                print(json)
+                print(try dataEnvelopeJSON(mode: "visible-windows", dataJSON: json))
             case .inspectAccessibility(let command):
                 let json = try await inspectAccessibility(using: command)
-                print(json)
+                print(try dataEnvelopeJSON(mode: "accessibility", dataJSON: json))
             case .menuBar(let command):
                 let result = try await handleMenuBar(using: command)
-                print(result)
+                if command.mode.isCapture {
+                    if command.rawOutput {
+                        print(result)
+                    } else {
+                        print(try outputEnvelopeJSON(mode: "menu.capture", output: result))
+                    }
+                } else {
+                    print(try dataEnvelopeJSON(mode: command.mode.envelopeMode, dataJSON: result))
+                }
             }
         } catch let error as RegionShotError {
-            writeStandardError("error: \(error.localizedDescription)\n")
-            writeStandardError("Run `regionshot --help` for usage.\n")
+            let json = (try? errorEnvelopeJSON(error: error)) ?? fallbackErrorEnvelopeJSON(
+                kind: error.kind,
+                message: error.localizedDescription,
+                exitCode: error.exitCode
+            )
+            writeStandardError(json + "\n")
             Darwin.exit(error.exitCode)
         } catch {
-            writeStandardError("error: \(error.localizedDescription)\n")
+            let json = fallbackErrorEnvelopeJSON(
+                kind: "unexpectedError",
+                message: error.localizedDescription,
+                exitCode: 1
+            )
+            writeStandardError(json + "\n")
             Darwin.exit(1)
         }
     }
@@ -128,6 +159,7 @@ struct CaptureCommand: Sendable {
     let windowSelection: WindowSelection?
     let windowCrop: WindowCropRect?
     let screenCaptureTimeout: TimeInterval
+    let rawOutput: Bool
 }
 
 struct FindAppsCommand: Sendable {
@@ -147,6 +179,7 @@ struct AsciiArtCommand: Sendable {
     let invert: Bool
     let includeOCR: Bool
     let recognitionLanguages: [String]
+    let rawOutput: Bool
 }
 
 struct ListWindowsCommand: Sendable {
@@ -164,6 +197,7 @@ struct VisibleWindowCaptureCommand: Sendable {
     let windowCrop: WindowCropRect?
     let outputURL: URL
     let screenCaptureTimeout: TimeInterval
+    let rawOutput: Bool
 }
 
 struct AccessibilityCommand: Sendable {
@@ -184,6 +218,7 @@ struct MenuBarCommand: Sendable {
     let mode: MenuBarMode
     let outputURL: URL?
     let screenCaptureTimeout: TimeInterval
+    let rawOutput: Bool
 }
 
 struct MenuChildSelection: Sendable {
@@ -443,6 +478,27 @@ enum MenuBarMode: Sendable {
     case pressItem
     case pressMenuItem(MenuChildSelection)
     case captureMenu
+
+    var envelopeMode: String {
+        switch self {
+        case .listItems:
+            return "menu.items"
+        case .pressItem:
+            return "menu.press"
+        case .pressMenuItem:
+            return "menu.press-item"
+        case .captureMenu:
+            return "menu.capture"
+        }
+    }
+
+    var isCapture: Bool {
+        if case .captureMenu = self {
+            return true
+        }
+
+        return false
+    }
 }
 
 enum MenuBarSelection: Sendable {
@@ -618,6 +674,38 @@ private struct QuitApplicationResponse: Encodable {
     let application: WindowListApplication
     let force: Bool
     let terminationRequestAccepted: Bool
+}
+
+private struct BasicEnvelope: Encodable {
+    let mode: String
+    let ok: Bool
+    let version: String
+}
+
+private struct OutputEnvelope: Encodable {
+    let mode: String
+    let ok: Bool
+    let output: String
+    let version: String
+}
+
+private struct ReportEnvelope: Encodable {
+    let mode: String
+    let ok: Bool
+    let report: String
+    let version: String
+}
+
+private struct ErrorEnvelope: Encodable {
+    let error: ErrorEntry
+    let ok: Bool
+    let version: String
+}
+
+private struct ErrorEntry: Encodable {
+    let kind: String
+    let message: String
+    let exitCode: Int32
 }
 
 private struct RunningApplicationEntry: Encodable {
@@ -980,6 +1068,39 @@ enum RegionShotError: LocalizedError, Sendable {
     case accessibilityQueryFailed(String)
     case encodeFailed(String)
 
+    var kind: String {
+        switch self {
+        case .invalidArguments:
+            return "invalidArguments"
+        case .invalidInteger:
+            return "invalidInteger"
+        case .invalidRegion:
+            return "invalidRegion"
+        case .capturePermissionDenied:
+            return "capturePermissionDenied"
+        case .accessibilityPermissionDenied:
+            return "accessibilityPermissionDenied"
+        case .applicationNotFound:
+            return "applicationNotFound"
+        case .ambiguousApplication:
+            return "ambiguousApplication"
+        case .windowNotFound:
+            return "windowNotFound"
+        case .ambiguousWindow:
+            return "ambiguousWindow"
+        case .launchFailed:
+            return "launchFailed"
+        case .captureFailed:
+            return "captureFailed"
+        case .operationTimedOut:
+            return "operationTimedOut"
+        case .accessibilityQueryFailed:
+            return "accessibilityQueryFailed"
+        case .encodeFailed:
+            return "encodeFailed"
+        }
+    }
+
     var errorDescription: String? {
         switch self {
         case .invalidArguments(let message):
@@ -1048,10 +1169,12 @@ private let usageText = """
 regionshot = macOS screenshot wrapper around native `ScreenCaptureKit`.
 
 Output:
-  capture mode -> writes a PNG file, then prints the final path to stdout
-  inspect mode -> prints JSON to stdout
-  ascii mode -> reads an image file, then prints layout ASCII and OCR text to stdout
-  errors -> stderr, non-zero exit
+  success -> compact JSON envelope on stdout: {"ok":true,"mode":"...","version":"..."}
+  capture/menu-capture -> writes a PNG file and returns the path as `output`
+  inspect/action modes -> return their mode-specific payload as `data`
+  ascii report mode -> returns layout ASCII and OCR text as `report`
+  errors -> compact JSON envelope on stderr with `error.kind`, `message`, and `exitCode`
+  add `--raw` to capture, menu-capture, or ascii forms for legacy bare path/report output
 
 Forms:
   regionshot --version
@@ -1062,17 +1185,17 @@ Forms:
   regionshot quit --app APP [--force]
   regionshot --find-app TEXT
   regionshot --list-displays
-  regionshot --ascii IMAGE [--ascii-style layout|tone] [--ascii-width N] [--ascii-max-height N] [--ascii-language CODE[,CODE...]] [--ascii-invert] [--ascii-no-ocr] [--ocr-only]
-  regionshot X Y WIDTH HEIGHT [--app APP] [--output FILE]
-  regionshot --x X --y Y --width WIDTH --height HEIGHT [--app APP] [--output FILE]
+  regionshot --ascii IMAGE [--ascii-style layout|tone] [--ascii-width N] [--ascii-max-height N] [--ascii-language CODE[,CODE...]] [--ascii-invert] [--ascii-no-ocr] [--ocr-only] [--raw]
+  regionshot X Y WIDTH HEIGHT [--app APP] [--output FILE] [--raw]
+  regionshot --x X --y Y --width WIDTH --height HEIGHT [--app APP] [--output FILE] [--raw]
   regionshot --app APP [--timeout SECONDS]
   regionshot --pid PID [--timeout SECONDS]
   regionshot --app-name NAME [--timeout SECONDS]
-  regionshot --app APP --frontmost-window [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS]
-  regionshot --app APP --window-index N [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS]
-  regionshot --app APP --window-name TITLE [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS]
+  regionshot --app APP --frontmost-window [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--raw]
+  regionshot --app APP --window-index N [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--raw]
+  regionshot --app APP --window-name TITLE [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--raw]
   regionshot --app APP --list-visible-windows
-  regionshot --app APP --visible-window [--window-index N | --window-name TITLE | --frontmost-window] [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS]
+  regionshot --app APP --visible-window [--window-index N | --window-name TITLE | --frontmost-window] [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--raw]
   regionshot --app APP --list-accessibility-windows
   regionshot --app APP --raise-window [--window-index N | --window-name TITLE | --frontmost-window]
   regionshot --app APP --close-window [--window-index N | --window-name TITLE | --frontmost-window]
@@ -1080,13 +1203,13 @@ Forms:
   regionshot --app APP --move-window X,Y [--window-index N | --window-name TITLE | --frontmost-window]
   regionshot --app APP --resize-window W,H [--window-index N | --window-name TITLE | --frontmost-window]
   regionshot --app APP --list-menu-bar-items
-  regionshot --app APP --capture-menu [--output FILE] [--timeout SECONDS]
+  regionshot --app APP --capture-menu [--output FILE] [--timeout SECONDS] [--raw]
   regionshot --app APP --menu-bar-index N --press
   regionshot --app APP --menu-bar-index N --press-menu-item TEXT
-  regionshot --app APP --menu-bar-index N --capture-menu [--output FILE] [--timeout SECONDS]
+  regionshot --app APP --menu-bar-index N --capture-menu [--output FILE] [--timeout SECONDS] [--raw]
   regionshot --app APP --menu-bar-item TEXT --press
   regionshot --app APP --menu-bar-item TEXT --press-menu-item TEXT
-  regionshot --app APP --menu-bar-item TEXT --capture-menu [--output FILE] [--timeout SECONDS]
+  regionshot --app APP --menu-bar-item TEXT --capture-menu [--output FILE] [--timeout SECONDS] [--raw]
   regionshot --app APP --list-elements [--depth N] [--max-children N] [--roles ROLE[,ROLE...]] [--interactive] [--flat]
   regionshot --app APP --wait-for-window TITLE [--timeout SECONDS]
   regionshot --app APP --get --path PATH
@@ -1127,25 +1250,25 @@ Forms:
   regionshot --app APP --window-name TITLE --element-at X,Y
 
 Rules:
-  `--version` prints the binary version and exits
-  `doctor` prints non-prompting permission, version, and host-process JSON
-  `clipboard` reads or sets plain text on the general pasteboard and prints JSON
-  `activate --app APP` asks macOS to activate a running app and prints JSON
+  `--version` returns the binary version envelope and exits
+  `doctor` returns non-prompting permission, version, and host-process data
+  `clipboard` reads or sets plain text on the general pasteboard and returns data
+  `activate --app APP` asks macOS to activate a running app and returns data
   `launch PATH|BUNDLE_ID` starts an app bundle, bundle id, or executable path; `--wait-window` waits for its first accessibility window
   `quit --app APP` asks a running app to terminate; add `--force` to force-terminate
-  `--list-displays` prints active display ids, point frames, pixel sizes, scale, and main-display status as JSON
+  `--list-displays` returns active display ids, point frames, pixel sizes, scale, and main-display status
   `--app` accepts app name, bundle id, or pid; pure integers are treated as pids for compatibility
   use `--pid PID` to select by process id, or `--app-name NAME` to force name/bundle matching for numeric app names
   use `--find-app TEXT` when the exact running app name or pid is unknown
-  `--ascii IMAGE` reads an existing screenshot/image and prints text-first layout ASCII plus OCR text
+  `--ascii IMAGE` reads an existing screenshot/image and returns text-first layout ASCII plus OCR text
   `--ascii-style layout` is the default; use `--ascii-style tone` for the old luminance-ramp rendering
   layout defaults: `--ascii-width 160`, `--ascii-max-height 100`; tone defaults: width 120, max-height 80
   `--ascii-width` accepts 16...240; `--ascii-max-height` accepts 8...240
   `--ascii-language` passes one or more comma-separated OCR language codes to Vision; omit it for Vision's default detection
   `--ascii-invert` flips light/dark mapping for tone style; `--ascii-no-ocr` disables Vision text recognition
-  `--ocr-only` returns OCR blocks as JSON without rendering the ASCII canvas
+  `--ocr-only` returns OCR blocks without rendering the ASCII canvas
   `--app` alone == inspect mode == same as `--list-windows`
-  window list JSON includes frontmost-first indices, titles, and bounds
+  window list data includes frontmost-first indices, titles, and bounds
   `--visible-window` uses visible pixels from the current screen, including floating panels; occluding windows are included
   `--list-visible-windows` uses CGWindowList; `--visible-window` uses CGWindowList selection plus ScreenCaptureKit display capture
   `--list-accessibility-windows` lists AX windows, supported actions, focused/main state, and whether the app/window is frontmost
@@ -1154,7 +1277,7 @@ Rules:
   `--minimize-window` presses the selected AX window's minimize button
   `--move-window X,Y` sets AXPosition; `--resize-window W,H` sets AXSize
   ScreenCaptureKit app/window operations time out after 5 seconds by default; use `--timeout SECONDS` to adjust
-  menu-bar item list JSON includes status-item/app-menu indices, roles, actions, and bounds
+  menu-bar item list data includes status-item/app-menu indices, roles, actions, and bounds
   `--capture-menu` opens the selected menu-bar item, captures the visible menu or popover, and closes it
   `--press-menu-item TEXT` opens the selected menu-bar item, then presses a child AXMenuItem by title, description, or identifier
   `--window-crop` is relative to the selected window's top-left in points
@@ -1920,6 +2043,10 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     }
 
     if parsed.flags.contains("--version") {
+        let hasOtherFlag = parsed.flags.contains { $0 != "--version" }
+        if parsed.region != nil || !parsed.values.isEmpty || hasOtherFlag {
+            throw RegionShotError.invalidArguments("`--version` cannot be combined with other arguments.")
+        }
         return .showVersion
     }
 
@@ -2003,6 +2130,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     let wantsAsciiInvert = parsed.flags.contains("--ascii-invert")
     let wantsAsciiNoOCR = parsed.flags.contains("--ascii-no-ocr")
     let wantsOCROnly = parsed.flags.contains("--ocr-only")
+    let wantsRawOutput = parsed.flags.contains("--raw")
     let asciiDefaultWidth = asciiStyle == .layout ? defaultLayoutAsciiWidth : defaultToneAsciiWidth
     let asciiDefaultMaxHeight = asciiStyle == .layout ? defaultLayoutAsciiMaxHeight : defaultToneAsciiMaxHeight
     let hasAsciiOption = parsed.values["--ascii-width"] != nil ||
@@ -2039,7 +2167,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
 
     if let asciiImagePath {
         let allowedValueKeys: Set<String> = ["--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language"]
-        let allowedFlagKeys: Set<String> = ["--help", "-h", "--ascii-invert", "--ascii-no-ocr", "--ocr-only"]
+        let allowedFlagKeys: Set<String> = ["--help", "-h", "--ascii-invert", "--ascii-no-ocr", "--ocr-only", "--raw"]
         let hasOtherValue = parsed.values.keys.contains { !allowedValueKeys.contains($0) }
         let hasOtherFlag = parsed.flags.contains { !allowedFlagKeys.contains($0) }
 
@@ -2070,7 +2198,8 @@ func parse(arguments: [String]) throws -> CommandBehavior {
                 ),
                 invert: wantsAsciiInvert,
                 includeOCR: !wantsAsciiNoOCR,
-                recognitionLanguages: asciiRecognitionLanguages
+                recognitionLanguages: asciiRecognitionLanguages,
+                rawOutput: wantsRawOutput
             )
         )
     }
@@ -2197,6 +2326,13 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         menuBarMode = nil
     }
 
+    let rawCapturesRectangle = parsed.region != nil && accessibilityMode == nil && menuBarMode == nil && !wantsWindowList && !wantsVisibleWindowList
+    let rawCapturesAppWindow = applicationSelector != nil && windowSelection != nil && accessibilityMode == nil && menuBarMode == nil && !wantsWindowList && !wantsVisibleWindowList && !wantsVisibleWindowCapture
+    let rawIsSupported = wantsCaptureMenu || wantsVisibleWindowCapture || rawCapturesRectangle || rawCapturesAppWindow
+    if wantsRawOutput, !rawIsSupported {
+        throw RegionShotError.invalidArguments("`--raw` is only supported for capture output, `--capture-menu`, and `--ascii IMAGE`.")
+    }
+
     if windowSelection != nil, applicationSelector == nil {
         throw RegionShotError.invalidArguments("Window selection requires an app selector (`--app`, `--app-name`, or `--pid`).")
     }
@@ -2267,7 +2403,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     }
 
     if wantsWindowList, outputPath != nil {
-        throw RegionShotError.invalidArguments("`--list-windows` prints JSON to stdout and does not use `--output`.")
+        throw RegionShotError.invalidArguments("`--list-windows` returns JSON data and does not use `--output`.")
     }
 
     if wantsWindowList, wantsVisibleWindowCapture || wantsVisibleWindowList {
@@ -2287,7 +2423,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     }
 
     if wantsVisibleWindowList, outputPath != nil {
-        throw RegionShotError.invalidArguments("`--list-visible-windows` prints JSON to stdout and does not use `--output`.")
+        throw RegionShotError.invalidArguments("`--list-visible-windows` returns JSON data and does not use `--output`.")
     }
 
     if wantsVisibleWindowList, accessibilityMode != nil || menuBarMode != nil {
@@ -2323,11 +2459,11 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     }
 
     if wantsMenuBarList, outputPath != nil {
-        throw RegionShotError.invalidArguments("`--list-menu-bar-items` prints JSON to stdout and does not use `--output`.")
+        throw RegionShotError.invalidArguments("`--list-menu-bar-items` returns JSON data and does not use `--output`.")
     }
 
     if wantsMenuBarPress, outputPath != nil {
-        throw RegionShotError.invalidArguments("Menu-bar `--press` prints JSON to stdout and does not use `--output`.")
+        throw RegionShotError.invalidArguments("Menu-bar `--press` returns JSON data and does not use `--output`.")
     }
 
     if wantsMenuBarPress, !selector.isEmpty {
@@ -2335,7 +2471,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     }
 
     if pressMenuItemQuery != nil, outputPath != nil {
-        throw RegionShotError.invalidArguments("`--press-menu-item` prints JSON to stdout and does not use `--output`.")
+        throw RegionShotError.invalidArguments("`--press-menu-item` returns JSON data and does not use `--output`.")
     }
 
     if pressMenuItemQuery != nil, !selector.isEmpty {
@@ -2355,7 +2491,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     }
 
     if accessibilityMode != nil, outputPath != nil {
-        throw RegionShotError.invalidArguments("Accessibility inspection and actions print JSON to stdout and do not use `--output`.")
+        throw RegionShotError.invalidArguments("Accessibility inspection and actions return JSON data and do not use `--output`.")
     }
 
     if wantsAccessibilityGet, selector.isEmpty {
@@ -2401,7 +2537,8 @@ func parse(arguments: [String]) throws -> CommandBehavior {
                 selection: menuBarSelection,
                 mode: menuBarMode,
                 outputURL: wantsCaptureMenu ? try outputURL(from: outputPath) : nil,
-                screenCaptureTimeout: screenCaptureTimeout
+                screenCaptureTimeout: screenCaptureTimeout,
+                rawOutput: wantsRawOutput
             )
         )
     }
@@ -2425,7 +2562,8 @@ func parse(arguments: [String]) throws -> CommandBehavior {
                 windowSelection: windowSelection,
                 windowCrop: windowCrop,
                 outputURL: try outputURL(from: outputPath),
-                screenCaptureTimeout: screenCaptureTimeout
+                screenCaptureTimeout: screenCaptureTimeout,
+                rawOutput: wantsRawOutput
             )
         )
     }
@@ -2467,7 +2605,8 @@ func parse(arguments: [String]) throws -> CommandBehavior {
             applicationSelector: applicationSelector,
             windowSelection: windowSelection,
             windowCrop: windowCrop,
-            screenCaptureTimeout: screenCaptureTimeout
+            screenCaptureTimeout: screenCaptureTimeout,
+            rawOutput: wantsRawOutput
         )
     )
 }
@@ -2520,7 +2659,7 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         let argument = arguments[index]
 
         switch argument {
-        case "--help", "-h", "--version", "--doctor", "--list-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--interactive", "--flat", "--list-menu-bar-items", "--get", "--get-element", "--wait-for-element", "--press", "--press-element", "--raise-window", "--raise", "--close-window", "--minimize-window", "--right", "--double", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only":
+        case "--help", "-h", "--version", "--doctor", "--list-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--interactive", "--flat", "--list-menu-bar-items", "--get", "--get-element", "--wait-for-element", "--press", "--press-element", "--raise-window", "--raise", "--close-window", "--minimize-window", "--right", "--double", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only", "--raw":
             flags.insert(argument)
             index += 1
         case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--wait-for-window", "--press-at", "--path", "--role", "--subrole", "--title", "--identifier", "--description", "--set-value", "--type", "--key", "--click", "--drag", "--scroll", "--move-window", "--resize-window", "--depth", "--max-children", "--roles", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
@@ -4565,7 +4704,7 @@ private func escapedOCRText(_ text: String) -> String {
 
 func encodeJSON<T: Encodable>(_ value: T) throws -> String {
     let encoder = JSONEncoder()
-    encoder.outputFormatting = [.sortedKeys]
+    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
     let data = try encoder.encode(value)
 
     guard let json = String(data: data, encoding: .utf8) else {
@@ -4573,6 +4712,78 @@ func encodeJSON<T: Encodable>(_ value: T) throws -> String {
     }
 
     return json
+}
+
+private func encodeJSONString(_ value: String) throws -> String {
+    let encoder = JSONEncoder()
+    let data = try encoder.encode(value)
+
+    guard let json = String(data: data, encoding: .utf8) else {
+        throw RegionShotError.encodeFailed("Failed to encode the response as UTF-8 JSON.")
+    }
+
+    return json
+}
+
+func dataEnvelopeJSON(mode: String, dataJSON: String, version: String = currentRegionShotVersion()) throws -> String {
+    let modeJSON = try encodeJSONString(mode)
+    let versionJSON = try encodeJSONString(version)
+    return #"{"data":\#(dataJSON),"mode":\#(modeJSON),"ok":true,"version":\#(versionJSON)}"#
+}
+
+func basicEnvelopeJSON(mode: String, version: String = currentRegionShotVersion()) throws -> String {
+    try encodeJSON(
+        BasicEnvelope(
+            mode: mode,
+            ok: true,
+            version: version
+        )
+    )
+}
+
+func outputEnvelopeJSON(mode: String, output: String, version: String = currentRegionShotVersion()) throws -> String {
+    try encodeJSON(
+        OutputEnvelope(
+            mode: mode,
+            ok: true,
+            output: output,
+            version: version
+        )
+    )
+}
+
+func reportEnvelopeJSON(mode: String, report: String, version: String = currentRegionShotVersion()) throws -> String {
+    try encodeJSON(
+        ReportEnvelope(
+            mode: mode,
+            ok: true,
+            report: report,
+            version: version
+        )
+    )
+}
+
+func errorEnvelopeJSON(error: RegionShotError, version: String = currentRegionShotVersion()) throws -> String {
+    try encodeJSON(
+        ErrorEnvelope(
+            error: ErrorEntry(
+                kind: error.kind,
+                message: error.localizedDescription,
+                exitCode: error.exitCode
+            ),
+            ok: false,
+            version: version
+        )
+    )
+}
+
+private func fallbackErrorEnvelopeJSON(kind: String, message: String, exitCode: Int32) -> String {
+    let sanitizedKind = kind.replacingOccurrences(of: "\"", with: "")
+    let sanitizedMessage = message
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+        .replacingOccurrences(of: "\n", with: "\\n")
+    return #"{"error":{"exitCode":\#(exitCode),"kind":"\#(sanitizedKind)","message":"\#(sanitizedMessage)"},"ok":false,"version":"unknown"}"#
 }
 
 private func windowListApplication(for application: SCRunningApplication) -> WindowListApplication {
