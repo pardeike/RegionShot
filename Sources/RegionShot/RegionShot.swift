@@ -108,6 +108,7 @@ struct ClipboardCommand: Sendable {
 struct AsciiArtCommand: Sendable {
     let imageURL: URL
     let style: AsciiArtStyle
+    let outputMode: AsciiOutputMode
     let width: Int
     let maxHeight: Int
     let invert: Bool
@@ -227,6 +228,11 @@ struct OCRTextBlock: Sendable {
 enum AsciiArtStyle: String, Sendable {
     case layout
     case tone
+}
+
+enum AsciiOutputMode: Sendable, Equatable {
+    case report
+    case ocrOnly
 }
 
 enum ApplicationSelector: Sendable {
@@ -434,6 +440,24 @@ private struct WindowListEntry: Encodable {
     let layer: Int
     let isOnScreen: Bool
     let isActive: Bool
+}
+
+struct OCROnlyResponse: Encodable {
+    let image: OCRImageEntry
+    let blocks: [OCRTextBlockEntry]
+    let error: String?
+}
+
+struct OCRImageEntry: Encodable {
+    let path: String
+    let width: Int
+    let height: Int
+}
+
+struct OCRTextBlockEntry: Encodable {
+    let text: String
+    let confidence: Float
+    let bounds: JSONRect
 }
 
 private struct VisibleWindowListResponse: Encodable {
@@ -730,7 +754,7 @@ Forms:
   regionshot doctor
   regionshot clipboard [--set TEXT]
   regionshot --find-app TEXT
-  regionshot --ascii IMAGE [--ascii-style layout|tone] [--ascii-width N] [--ascii-max-height N] [--ascii-language CODE[,CODE...]] [--ascii-invert] [--ascii-no-ocr]
+  regionshot --ascii IMAGE [--ascii-style layout|tone] [--ascii-width N] [--ascii-max-height N] [--ascii-language CODE[,CODE...]] [--ascii-invert] [--ascii-no-ocr] [--ocr-only]
   regionshot X Y WIDTH HEIGHT [--app APP] [--output FILE]
   regionshot --x X --y Y --width WIDTH --height HEIGHT [--app APP] [--output FILE]
   regionshot --app APP [--timeout SECONDS]
@@ -781,6 +805,7 @@ Rules:
   `--ascii-width` accepts 16...240; `--ascii-max-height` accepts 8...240
   `--ascii-language` passes one or more comma-separated OCR language codes to Vision; omit it for Vision's default detection
   `--ascii-invert` flips light/dark mapping for tone style; `--ascii-no-ocr` disables Vision text recognition
+  `--ocr-only` returns OCR blocks as JSON without rendering the ASCII canvas
   `--app` alone == inspect mode == same as `--list-windows`
   window list JSON includes frontmost-first indices, titles, and bounds
   `--visible-window` uses visible pixels from the current screen, including floating panels; occluding windows are included
@@ -1335,6 +1360,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     let asciiRecognitionLanguages = try parseOCRLanguages(parsed.values["--ascii-language"])
     let wantsAsciiInvert = parsed.flags.contains("--ascii-invert")
     let wantsAsciiNoOCR = parsed.flags.contains("--ascii-no-ocr")
+    let wantsOCROnly = parsed.flags.contains("--ocr-only")
     let asciiDefaultWidth = asciiStyle == .layout ? defaultLayoutAsciiWidth : defaultToneAsciiWidth
     let asciiDefaultMaxHeight = asciiStyle == .layout ? defaultLayoutAsciiMaxHeight : defaultToneAsciiMaxHeight
     let hasAsciiOption = parsed.values["--ascii-width"] != nil ||
@@ -1342,7 +1368,8 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         parsed.values["--ascii-style"] != nil ||
         parsed.values["--ascii-language"] != nil ||
         wantsAsciiInvert ||
-        wantsAsciiNoOCR
+        wantsAsciiNoOCR ||
+        wantsOCROnly
 
     if parsed.values["--find-app"] != nil, findAppQuery == nil {
         throw RegionShotError.invalidArguments("`--find-app` requires a non-empty search string.")
@@ -1358,7 +1385,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
 
     if let asciiImagePath {
         let allowedValueKeys: Set<String> = ["--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language"]
-        let allowedFlagKeys: Set<String> = ["--help", "-h", "--ascii-invert", "--ascii-no-ocr"]
+        let allowedFlagKeys: Set<String> = ["--help", "-h", "--ascii-invert", "--ascii-no-ocr", "--ocr-only"]
         let hasOtherValue = parsed.values.keys.contains { !allowedValueKeys.contains($0) }
         let hasOtherFlag = parsed.flags.contains { !allowedFlagKeys.contains($0) }
 
@@ -1366,10 +1393,15 @@ func parse(arguments: [String]) throws -> CommandBehavior {
             throw RegionShotError.invalidArguments("`--ascii` cannot be combined with capture, app/window, menu-bar, Accessibility, `--find-app`, or `--output` modes.")
         }
 
+        if wantsOCROnly, wantsAsciiNoOCR {
+            throw RegionShotError.invalidArguments("`--ocr-only` cannot be combined with `--ascii-no-ocr`.")
+        }
+
         return .asciiArt(
             AsciiArtCommand(
                 imageURL: try inputURL(from: asciiImagePath),
                 style: asciiStyle,
+                outputMode: wantsOCROnly ? .ocrOnly : .report,
                 width: try parseAsciiDimension(
                     parsed.values["--ascii-width"],
                     flag: "--ascii-width",
@@ -1390,7 +1422,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     }
 
     if hasAsciiOption {
-        throw RegionShotError.invalidArguments("`--ascii-style`, `--ascii-width`, `--ascii-max-height`, `--ascii-language`, `--ascii-invert`, and `--ascii-no-ocr` require `--ascii IMAGE`.")
+        throw RegionShotError.invalidArguments("`--ascii-style`, `--ascii-width`, `--ascii-max-height`, `--ascii-language`, `--ascii-invert`, `--ascii-no-ocr`, and `--ocr-only` require `--ascii IMAGE`.")
     }
 
     if let findAppQuery {
@@ -1759,7 +1791,7 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         let argument = arguments[index]
 
         switch argument {
-        case "--help", "-h", "--version", "--doctor", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--press", "--press-element", "--raise-window", "--raise", "--capture-menu", "--ascii-invert", "--ascii-no-ocr":
+        case "--help", "-h", "--version", "--doctor", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--press", "--press-element", "--raise-window", "--raise", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only":
             flags.insert(argument)
             index += 1
         case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--depth", "--max-children", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
@@ -2506,6 +2538,15 @@ private func asciiArtReport(using command: AsciiArtCommand) throws -> String {
         ocrStatus = .disabled
     }
 
+    if case .ocrOnly = command.outputMode {
+        return try formatOCROnlyResponse(
+            imagePath: command.imageURL.path,
+            imageWidth: image.width,
+            imageHeight: image.height,
+            ocrStatus: ocrStatus
+        )
+    }
+
     let rendered: RenderedAsciiArt
     switch command.style {
     case .layout:
@@ -3141,6 +3182,48 @@ func formatAsciiArtReport(
         "",
         formatOCRSection(ocrStatus),
     ].joined(separator: "\n")
+}
+
+func formatOCROnlyResponse(
+    imagePath: String,
+    imageWidth: Int,
+    imageHeight: Int,
+    ocrStatus: OCRReportStatus
+) throws -> String {
+    let blocks: [OCRTextBlock]
+    let error: String?
+
+    switch ocrStatus {
+    case .blocks(let recognizedBlocks):
+        blocks = recognizedBlocks
+        error = nil
+    case .unavailable(let reason):
+        blocks = []
+        error = singleLineText(reason).trimmingCharacters(in: .whitespacesAndNewlines)
+    case .disabled:
+        blocks = []
+        error = "OCR disabled"
+    }
+
+    return try encodeJSON(
+        OCROnlyResponse(
+            image: OCRImageEntry(
+                path: imagePath,
+                width: imageWidth,
+                height: imageHeight
+            ),
+            blocks: sortedOCRTextBlocks(blocks).map(ocrTextBlockEntry(for:)),
+            error: error
+        )
+    )
+}
+
+private func ocrTextBlockEntry(for block: OCRTextBlock) -> OCRTextBlockEntry {
+    OCRTextBlockEntry(
+        text: block.text,
+        confidence: block.confidence,
+        bounds: JSONRect(block.bounds)
+    )
 }
 
 func formatOCRSection(_ status: OCRReportStatus) -> String {

@@ -103,6 +103,7 @@ final class RegionShotTests: XCTestCase {
         XCTAssertTrue(command.invert)
         XCTAssertFalse(command.includeOCR)
         XCTAssertEqual(command.recognitionLanguages, [])
+        XCTAssertEqual(command.outputMode, .report)
     }
 
     func testAsciiArtParsingUsesDefaults() throws {
@@ -118,6 +119,29 @@ final class RegionShotTests: XCTestCase {
         XCTAssertFalse(command.invert)
         XCTAssertTrue(command.includeOCR)
         XCTAssertEqual(command.recognitionLanguages, [])
+        XCTAssertEqual(command.outputMode, .report)
+    }
+
+    func testAsciiArtParsingSupportsOCROnlyMode() throws {
+        let behavior = try parse(arguments: [
+            "--ascii", "/tmp/screenshot.png",
+            "--ocr-only",
+        ])
+
+        guard case .asciiArt(let command) = behavior else {
+            return XCTFail("Expected ascii-art behavior.")
+        }
+
+        XCTAssertEqual(command.outputMode, .ocrOnly)
+        XCTAssertTrue(command.includeOCR)
+    }
+
+    func testOCROnlyRejectsDisabledOCR() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--ascii", "/tmp/screenshot.png", "--ocr-only", "--ascii-no-ocr"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--ocr-only"))
+        }
     }
 
     func testAsciiArtParsingSupportsOCRLanguageList() throws {
@@ -434,6 +458,12 @@ final class RegionShotTests: XCTestCase {
 
         XCTAssertThrowsError(
             try parse(arguments: ["--ascii-language", "sv-SE"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--ascii"))
+        }
+
+        XCTAssertThrowsError(
+            try parse(arguments: ["--ocr-only"])
         ) { error in
             XCTAssertTrue(String(describing: error).contains("--ascii"))
         }
@@ -926,6 +956,31 @@ final class RegionShotTests: XCTestCase {
                 "- [x=5 y=10 w=40 h=8 confidence=0.93] \"Top \\\"Menu\\\"\"",
                 "- [x=10 y=100 w=60 h=14 confidence=0.80] \"Bottom\"",
             ]
+        )
+    }
+
+    func testOCROnlyResponseFormatsSortedJSONBlocks() throws {
+        let json = try formatOCROnlyResponse(
+            imagePath: "/tmp/screenshot.png",
+            imageWidth: 200,
+            imageHeight: 100,
+            ocrStatus: .blocks([
+                OCRTextBlock(
+                    text: "Bottom",
+                    confidence: 0.8,
+                    bounds: CGRect(x: 10, y: 100, width: 60, height: 14)
+                ),
+                OCRTextBlock(
+                    text: "Top",
+                    confidence: 0.93,
+                    bounds: CGRect(x: 5, y: 10, width: 40, height: 8)
+                ),
+            ])
+        )
+
+        XCTAssertEqual(
+            json,
+            #"{"blocks":[{"bounds":{"height":8,"width":40,"x":5,"y":10},"confidence":0.93,"text":"Top"},{"bounds":{"height":14,"width":60,"x":10,"y":100},"confidence":0.8,"text":"Bottom"}],"image":{"height":100,"path":"\/tmp\/screenshot.png","width":200}}"#
         )
     }
 

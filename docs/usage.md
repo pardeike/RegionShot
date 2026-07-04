@@ -172,6 +172,7 @@ regionshot --ascii /tmp/screenshot.png
 regionshot --ascii /tmp/screenshot.png --ascii-width 160 --ascii-max-height 80
 regionshot --ascii /tmp/screenshot.png --ascii-style tone --ascii-width 100 --ascii-max-height 60
 regionshot --ascii /tmp/screenshot.png --ascii-language de-DE,sv-SE
+regionshot --ascii /tmp/screenshot.png --ocr-only
 ```
 
 `--ascii IMAGE` reads an existing screenshot or image file and prints a compact
@@ -191,6 +192,10 @@ Useful options:
 - `--ascii-language CODE[,CODE...]`
 - `--ascii-invert`
 - `--ascii-no-ocr`
+- `--ocr-only`
+
+`--ocr-only` skips ASCII rendering and returns JSON OCR blocks with pixel
+bounds, which is cheaper when text is the only needed signal.
 
 ## Timeouts
 
