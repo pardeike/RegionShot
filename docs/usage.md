@@ -134,6 +134,7 @@ menu item by title, description, or identifier.
 regionshot --app "System Settings" --list-elements
 regionshot --app "System Settings" --list-elements --depth 2 --max-children 12
 regionshot --app "System Settings" --get --role AXTextField --title Name
+regionshot --app "System Settings" --set-value "Andreas" --role AXTextField --title Name
 regionshot --app "System Settings" --press --role AXButton --title Done
 regionshot --app "System Settings" --press-at 14,14
 regionshot --app "System Settings" --element-at 14,14
@@ -151,6 +152,10 @@ expand the tree.
 `--get` finds one accessibility element using selector fields and returns its
 full JSON attributes without performing an action. It uses the same selector
 fields and matching rules as `--press`.
+
+`--set-value TEXT` finds one accessibility element using selector fields, writes
+the element's `AXValue`, and returns the updated element. Empty text is valid and
+can be used to clear text fields that support `AXValue` writes.
 
 `--press` finds a pressable accessibility element using selector fields such as
 `--role`, `--subrole`, `--title`, `--identifier`, and `--description`, then

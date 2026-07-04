@@ -448,6 +448,63 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(selector.elementDescription, "Search field")
     }
 
+    func testAccessibilitySetValueParsing() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--set-value", "Andreas",
+            "--role", "AXTextField",
+            "--title", "Name",
+        ])
+
+        guard case .inspectAccessibility(let command) = behavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .setValue(let selector, let value) = command.mode else {
+            return XCTFail("Expected accessibility set-value mode.")
+        }
+
+        XCTAssertEqual(value, "Andreas")
+        XCTAssertEqual(selector.role, "AXTextField")
+        XCTAssertEqual(selector.title, "Name")
+    }
+
+    func testAccessibilitySetValuePreservesEmptyString() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--set-value", "",
+            "--role", "AXTextField",
+        ])
+
+        guard case .inspectAccessibility(let command) = behavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .setValue(let selector, let value) = command.mode else {
+            return XCTFail("Expected accessibility set-value mode.")
+        }
+
+        XCTAssertEqual(value, "")
+        XCTAssertEqual(selector.role, "AXTextField")
+    }
+
+    func testAccessibilitySetValueRequiresSelector() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--set-value", "Andreas"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--set-value"))
+        }
+    }
+
+    func testAccessibilitySetValueRejectsMixedAccessibilityMode() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--set-value", "Andreas", "--role", "AXTextField", "--get"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--set-value"))
+            XCTAssertTrue(String(describing: error).contains("--get"))
+        }
+    }
+
     func testAccessibilityGetElementRequiresSelector() {
         XCTAssertThrowsError(
             try parse(arguments: ["--app", "Terminal", "--get"])
@@ -461,6 +518,7 @@ final class RegionShotTests: XCTestCase {
             try parse(arguments: ["--app", "Terminal", "--title", "Done"])
         ) { error in
             XCTAssertTrue(String(describing: error).contains("--get"))
+            XCTAssertTrue(String(describing: error).contains("--set-value"))
             XCTAssertTrue(String(describing: error).contains("--press"))
         }
     }
