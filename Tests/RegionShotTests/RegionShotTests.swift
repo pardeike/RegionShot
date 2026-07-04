@@ -344,6 +344,19 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(events, ["preflight"])
     }
 
+    func testEncodeJSONUsesCompactSortedKeys() throws {
+        let json = try encodeJSON(
+            JSONFixture(
+                z: "last",
+                a: "first",
+                nested: JSONNestedFixture(b: 2, a: 1)
+            )
+        )
+
+        XCTAssertEqual(json, #"{"a":"first","nested":{"a":1,"b":2},"z":"last"}"#)
+        XCTAssertFalse(json.contains("\n"))
+    }
+
     func testVisibleWindowCatalogFiltersToNormalVisibleWindows() {
         let snapshots = [
             WindowSnapshot(
@@ -610,4 +623,15 @@ private func borderedPixels(width: Int, height: Int) -> [UInt8] {
             row == 0 || row == height - 1 || column == 0 || column == width - 1 ? UInt8(0) : UInt8(255)
         }
     }
+}
+
+private struct JSONFixture: Encodable {
+    let z: String
+    let a: String
+    let nested: JSONNestedFixture
+}
+
+private struct JSONNestedFixture: Encodable {
+    let b: Int
+    let a: Int
 }
