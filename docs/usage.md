@@ -1,7 +1,20 @@
 # RegionShot Command Guide
 
-This page lists the main command forms. Run `regionshot --help` for the exact
-help text from the installed binary.
+This page lists the main command forms. Run `regionshot --help` for the
+subcommand index, or `regionshot <subcommand> --help` for focused help from the
+installed binary. Existing flag-first forms still work as compatibility aliases.
+
+## Subcommands
+
+```bash
+regionshot capture 120 240 800 600
+regionshot apps Terminal
+regionshot windows --app Terminal --visible
+regionshot ax --app Terminal tree --depth 2
+regionshot menu --app Drafty list
+regionshot ascii /tmp/screenshot.png --ocr-only
+regionshot displays
+```
 
 ## Output
 

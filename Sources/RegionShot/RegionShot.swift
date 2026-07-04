@@ -21,6 +21,8 @@ struct RegionShot {
             switch behavior {
             case .showHelp:
                 print(usageText)
+            case .showHelpText(let text):
+                print(text)
             case .showVersion:
                 print(try basicEnvelopeJSON(mode: "version"))
             case .doctor:
@@ -122,6 +124,7 @@ struct RegionShot {
 
 enum CommandBehavior: Sendable {
     case showHelp
+    case showHelpText(String)
     case showVersion
     case doctor
     case clipboard(ClipboardCommand)
@@ -140,7 +143,7 @@ enum CommandBehavior: Sendable {
 
     var shouldSynchronizeAgentSupport: Bool {
         switch self {
-        case .showHelp, .showVersion, .doctor, .clipboard, .listDisplays:
+        case .showHelp, .showHelpText, .showVersion, .doctor, .clipboard, .listDisplays:
             return false
         case .activateApplication, .launchApplication, .quitApplication, .findApps, .asciiArt, .capture, .captureVisibleWindow, .listWindows, .listVisibleWindows, .inspectAccessibility, .menuBar:
             return true
@@ -1251,159 +1254,186 @@ private let accessibilityTreeDepthRange = 0...12
 private let accessibilityTreeChildLimitRange = 1...200
 
 private let usageText = """
-regionshot = macOS screenshot wrapper around native `ScreenCaptureKit`.
+regionshot = macOS screenshot, inspection, and UI action tool.
 
-Output:
-  success -> compact JSON envelope on stdout: {"ok":true,"mode":"...","version":"..."}
-  capture/menu-capture -> writes an image file and returns the path as `output`
-  inspect/action modes -> return their mode-specific payload as `data`
-  ascii report mode -> returns layout ASCII and OCR text as `report`
-  add `--with-ascii` or `--with-ocr` to capture forms to include text from the written image
-  errors -> compact JSON envelope on stderr with `error.kind`, `message`, and `exitCode`
-  add `--raw` to capture, menu-capture, or ascii forms for legacy bare path/report output
+Usage:
+  regionshot <subcommand> [options]
 
-Forms:
-  regionshot --version
+Subcommands:
+  capture   pixel capture: regions, app windows, visible windows, displays
+  apps      find running apps
+  windows   list ScreenCaptureKit, visible, or AX windows
+  ax        AX tree/get/press/input/window actions
+  menu      menu-bar list/press/press-item/capture
+  ascii     image to ASCII/OCR text
+  displays | doctor | clipboard
+  launch | activate | quit
+
+Legacy flag-first forms are still accepted.
+Run `regionshot <subcommand> --help` for focused help.
+"""
+
+private let captureHelpText = """
+Usage:
+  regionshot capture X Y WIDTH HEIGHT [options]
+  regionshot capture --x X --y Y --width WIDTH --height HEIGHT [options]
+  regionshot capture --display DISPLAY_ID [options]
+  regionshot capture --all-displays [options]
+  regionshot capture --app APP [--frontmost-window | --window-index N | --window-name TITLE] [options]
+  regionshot capture --app APP --visible-window [--window-index N | --window-name TITLE | --frontmost-window] [options]
+
+Options:
+  --output FILE
+  --timeout SECONDS
+  --format png|jpeg
+  --quality 0...1
+  --max-dimension N
+  --window-crop X,Y,W,H
+  --with-ascii | --with-ocr
+  --raw
+"""
+
+private let appsHelpText = """
+Usage:
+  regionshot apps QUERY
+
+Find running apps by name, bundle id, path, or pid. Equivalent legacy form:
+  regionshot --find-app QUERY
+"""
+
+private let windowsHelpText = """
+Usage:
+  regionshot windows --app APP
+  regionshot windows --app APP --visible
+  regionshot windows --app APP --ax
+
+Modes:
+  default    ScreenCaptureKit app windows
+  --visible currently visible app windows from the window stack
+  --ax      Accessibility windows
+"""
+
+private let axHelpText = """
+Usage:
+  regionshot ax --app APP ACTION [selectors/options]
+
+Actions:
+  windows
+  tree
+  get
+  wait-for-window TITLE
+  wait-for-element
+  set-value TEXT
+  type TEXT
+  key CHORD
+  press
+  press-at X,Y
+  element-at X,Y
+  click X,Y [--right] [--double]
+  drag X1,Y1,X2,Y2
+  scroll DX,DY
+  raise
+  close
+  minimize
+  move X,Y
+  resize W,H
+
+Selectors/options:
+  --path PATH
+  --role ROLE
+  --subrole SUBROLE
+  --title TITLE
+  --identifier ID
+  --description TEXT
+  --window-index N | --window-name TITLE | --frontmost-window
+  --depth N --max-children N --roles ROLE[,ROLE...] --interactive --flat
+  --timeout SECONDS
+  --no-prompt
+"""
+
+private let menuHelpText = """
+Usage:
+  regionshot menu --app APP list
+  regionshot menu --app APP press [--menu-bar-index N | --menu-bar-item TEXT]
+  regionshot menu --app APP press-item TEXT [--menu-bar-index N | --menu-bar-item TEXT]
+  regionshot menu --app APP capture [--menu-bar-index N | --menu-bar-item TEXT] [capture options]
+
+Capture options:
+  --output FILE
+  --timeout SECONDS
+  --format png|jpeg
+  --quality 0...1
+  --max-dimension N
+  --with-ascii | --with-ocr
+  --raw
+  --no-prompt
+"""
+
+private let asciiHelpText = """
+Usage:
+  regionshot ascii IMAGE [options]
+
+Options:
+  --ascii-style layout|tone
+  --ascii-width N
+  --ascii-max-height N
+  --ascii-language CODE[,CODE...]
+  --ascii-invert
+  --ascii-no-ocr
+  --ocr-only
+  --raw
+"""
+
+private let displaysHelpText = """
+Usage:
+  regionshot displays
+  regionshot capture --display DISPLAY_ID [capture options]
+  regionshot capture --all-displays [capture options]
+
+`regionshot displays` returns active display ids, point frames, pixel sizes,
+scale, and main-display status.
+"""
+
+private let doctorHelpText = """
+Usage:
   regionshot doctor
-  regionshot clipboard [--set TEXT]
-  regionshot activate --app APP
+
+Checks Screen Recording and Accessibility permission status without prompting,
+and reports the host process that macOS permissions apply to.
+"""
+
+private let clipboardHelpText = """
+Usage:
+  regionshot clipboard
+  regionshot clipboard --set TEXT
+
+Reads or sets plain text on the general pasteboard.
+"""
+
+private let launchHelpText = """
+Usage:
   regionshot launch PATH|BUNDLE_ID [--wait-window [--no-prompt]] [--timeout SECONDS] [--args ARG ...]
+
+Starts an app bundle, bundle id, or executable path. `--wait-window` waits for
+the launched app's first Accessibility window.
+"""
+
+private let activateHelpText = """
+Usage:
+  regionshot activate --app APP
+  regionshot activate --app-name NAME
+  regionshot activate --pid PID
+
+Activates a running app.
+"""
+
+private let quitHelpText = """
+Usage:
   regionshot quit --app APP [--force]
-  regionshot --find-app TEXT
-  regionshot --list-displays
-  regionshot --display DISPLAY_ID [--output FILE] [--timeout SECONDS] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
-  regionshot --all-displays [--output FILE] [--timeout SECONDS] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
-  regionshot --ascii IMAGE [--ascii-style layout|tone] [--ascii-width N] [--ascii-max-height N] [--ascii-language CODE[,CODE...]] [--ascii-invert] [--ascii-no-ocr] [--ocr-only] [--raw]
-  regionshot X Y WIDTH HEIGHT [--app APP] [--output FILE] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
-  regionshot --x X --y Y --width WIDTH --height HEIGHT [--app APP] [--output FILE] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
-  regionshot --app APP [--timeout SECONDS]
-  regionshot --pid PID [--timeout SECONDS]
-  regionshot --app-name NAME [--timeout SECONDS]
-  regionshot --app APP --frontmost-window [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
-  regionshot --app APP --window-index N [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
-  regionshot --app APP --window-name TITLE [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
-  regionshot --app APP --list-visible-windows
-  regionshot --app APP --visible-window [--window-index N | --window-name TITLE | --frontmost-window] [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
-  regionshot --app APP --list-accessibility-windows
-  regionshot --app APP --raise-window [--window-index N | --window-name TITLE | --frontmost-window]
-  regionshot --app APP --close-window [--window-index N | --window-name TITLE | --frontmost-window]
-  regionshot --app APP --minimize-window [--window-index N | --window-name TITLE | --frontmost-window]
-  regionshot --app APP --move-window X,Y [--window-index N | --window-name TITLE | --frontmost-window]
-  regionshot --app APP --resize-window W,H [--window-index N | --window-name TITLE | --frontmost-window]
-  regionshot --app APP --list-menu-bar-items
-  regionshot --app APP --capture-menu [--output FILE] [--timeout SECONDS] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
-  regionshot --app APP --menu-bar-index N --press
-  regionshot --app APP --menu-bar-index N --press-menu-item TEXT
-  regionshot --app APP --menu-bar-index N --capture-menu [--output FILE] [--timeout SECONDS] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
-  regionshot --app APP --menu-bar-item TEXT --press
-  regionshot --app APP --menu-bar-item TEXT --press-menu-item TEXT
-  regionshot --app APP --menu-bar-item TEXT --capture-menu [--output FILE] [--timeout SECONDS] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
-  regionshot --app APP --list-elements [--depth N] [--max-children N] [--roles ROLE[,ROLE...]] [--interactive] [--flat]
-  regionshot --app APP --wait-for-window TITLE [--timeout SECONDS]
-  regionshot --app APP --get --path PATH
-  regionshot --app APP --get --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
-  regionshot --app APP --wait-for-element --path PATH [--timeout SECONDS]
-  regionshot --app APP --wait-for-element --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT] [--timeout SECONDS]
-  regionshot --app APP --set-value TEXT --path PATH
-  regionshot --app APP --set-value TEXT --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
-  regionshot --app APP --type TEXT
-  regionshot --app APP --key CHORD
-  regionshot --app APP --click X,Y [--right] [--double]
-  regionshot --app APP --drag X1,Y1,X2,Y2
-  regionshot --app APP --scroll DX,DY
-  regionshot --app APP --press --path PATH
-  regionshot --app APP --press --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
-  regionshot --app APP --press-at X,Y
-  regionshot --app APP --element-at X,Y
-  regionshot --app APP --frontmost-window --list-elements
-  regionshot --app APP --window-index N --list-elements
-  regionshot --app APP --window-name TITLE --list-elements
-  regionshot --app APP --frontmost-window --get --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
-  regionshot --app APP --window-index N --get --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
-  regionshot --app APP --window-name TITLE --get --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
-  regionshot --app APP --frontmost-window --wait-for-element --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT] [--timeout SECONDS]
-  regionshot --app APP --window-index N --wait-for-element --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT] [--timeout SECONDS]
-  regionshot --app APP --window-name TITLE --wait-for-element --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT] [--timeout SECONDS]
-  regionshot --app APP --frontmost-window --set-value TEXT --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
-  regionshot --app APP --window-index N --set-value TEXT --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
-  regionshot --app APP --window-name TITLE --set-value TEXT --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
-  regionshot --app APP --frontmost-window --press --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
-  regionshot --app APP --window-index N --press --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
-  regionshot --app APP --window-name TITLE --press --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
-  regionshot --app APP --frontmost-window --press-at X,Y
-  regionshot --app APP --window-index N --press-at X,Y
-  regionshot --app APP --window-name TITLE --press-at X,Y
-  regionshot --app APP --frontmost-window --element-at X,Y
-  regionshot --app APP --window-index N --element-at X,Y
-  regionshot --app APP --window-name TITLE --element-at X,Y
+  regionshot quit --app-name NAME [--force]
+  regionshot quit --pid PID [--force]
 
-Rules:
-  `--version` returns the binary version envelope and exits
-  `doctor` returns non-prompting permission, version, and host-process data
-  `clipboard` reads or sets plain text on the general pasteboard and returns data
-  `activate --app APP` asks macOS to activate a running app and returns data
-  `launch PATH|BUNDLE_ID` starts an app bundle, bundle id, or executable path; `--wait-window` waits for its first accessibility window
-  `quit --app APP` asks a running app to terminate; add `--force` to force-terminate
-  `--list-displays` returns active display ids, point frames, pixel sizes, scale, and main-display status
-  `--display DISPLAY_ID` captures one active display; use `--list-displays` to find ids
-  `--all-displays` captures the union of all active display frames
-  `--app` accepts app name, bundle id, or pid; pure integers are treated as pids for compatibility
-  use `--pid PID` to select by process id, or `--app-name NAME` to force name/bundle matching for numeric app names
-  use `--find-app TEXT` when the exact running app name or pid is unknown
-  `--ascii IMAGE` reads an existing screenshot/image and returns text-first layout ASCII plus OCR text
-  `--ascii-style layout` is the default; use `--ascii-style tone` for the old luminance-ramp rendering
-  layout defaults: `--ascii-width 160`, `--ascii-max-height 100`; tone defaults: width 120, max-height 80
-  `--ascii-width` accepts 16...240; `--ascii-max-height` accepts 8...240
-  `--ascii-language` passes one or more comma-separated OCR language codes to Vision; omit it for Vision's default detection
-  `--ascii-invert` flips light/dark mapping for tone style; `--ascii-no-ocr` disables Vision text recognition
-  `--ocr-only` returns OCR blocks without rendering the ASCII canvas
-  `--with-ascii` appends the ASCII report to capture output; `--with-ocr` appends OCR blocks only
-  capture output defaults to PNG; use `--format jpeg`, `--quality 0.7`, or `--max-dimension N` for cheaper image output
-  `--app` alone == inspect mode == same as `--list-windows`
-  window list data includes frontmost-first indices, titles, and bounds
-  `--visible-window` uses visible pixels from the current screen, including floating panels; occluding windows are included
-  `--list-visible-windows` uses CGWindowList; `--visible-window` uses CGWindowList selection plus ScreenCaptureKit display capture
-  `--list-accessibility-windows` lists AX windows, supported actions, focused/main state, and whether the app/window is frontmost
-  add `--no-prompt` to Accessibility, menu-bar, or `launch --wait-window` commands to fail instead of showing the system Accessibility permission prompt
-  `--raise-window` (alias: `--raise`) activates the app and performs `AXRaise` on the selected AX window
-  `--close-window` presses the selected AX window's close button
-  `--minimize-window` presses the selected AX window's minimize button
-  `--move-window X,Y` sets AXPosition; `--resize-window W,H` sets AXSize
-  ScreenCaptureKit app/window operations time out after 5 seconds by default; use `--timeout SECONDS` to adjust
-  menu-bar item list data includes status-item/app-menu indices, roles, actions, and bounds
-  `--capture-menu` opens the selected menu-bar item, captures the visible menu or popover, and closes it
-  `--press-menu-item TEXT` opens the selected menu-bar item, then presses a child AXMenuItem by title, description, or identifier
-  `--window-crop` is relative to the selected window's top-left in points
-  prefer selector-based `--press` (alias: `--press-element`); use `--press-at` as fallback
-  accessibility modes default to the app's focused window, then main window, then first window
-  `--frontmost-window`, `--window-index`, or `--window-name` can override that default for accessibility modes
-  `--element-at` and `--press-at` use window-relative x,y coordinates in points
-  selector fields: `--path`, `--role`, `--subrole`, `--title`, `--identifier`, `--description`
-  `--wait-for-window TITLE` polls until one matching accessibility window appears, using `--timeout SECONDS`
-  `--get` (alias: `--get-element`) returns one matching accessibility element without performing an action
-  `--wait-for-element` polls until one matching accessibility element appears, using `--timeout SECONDS`
-  `--set-value TEXT` writes AXValue on one matching accessibility element and returns the updated element
-  `--type TEXT` posts Unicode keyboard input to the app; `--key CHORD` posts shortcuts like `cmd+s`
-  `--click`, `--drag`, and `--scroll` post CGEvent mouse input to the selected window after activating it
-  `--title`, `--identifier`, and `--description` prefer exact matches, then fall back to case-insensitive contains
-  `--list-elements` accepts `--depth` 0...12, `--max-children` 1...200, `--roles`, `--interactive`, and `--flat`
-  list-elements responses include stable `path` strings such as `0.3.1` for each returned element
-  element `actions` arrays are emitted only when non-empty
-  use `--path PATH` to target a listed element directly; it cannot be combined with fuzzy selector fields
-  capture and ScreenCaptureKit window listing require Screen Recording permission
-  accessibility inspection and actions require Accessibility permission
-  rectangle mode without `--app` captures visible display pixels with ScreenCaptureKit
-  rectangle mode with `--app` includes only that app, even if covered by other windows
-  if ScreenCaptureKit app/window capture times out, try `--visible-window` for visible-pixel capture
-  app/window modes target app windows; use menu-bar modes for status-item UI from accessory/background apps
-
-Exit codes:
-  64 usage or invalid arguments
-  65 ambiguous app or window match
-  66 app or window not found
-  69 unavailable feature or missing permission
-  70 capture, Accessibility, or encoding failure
-  75 timed out operation
+Asks a running app to terminate; `--force` force-terminates it.
 """
 
 private let agentSupportSkillName = "regionshot"
@@ -2112,6 +2142,10 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         return .showHelp
     }
 
+    if let subcommandBehavior = try parseSubcommand(arguments: arguments) {
+        return subcommandBehavior
+    }
+
     if arguments.first == "doctor" {
         guard arguments.count == 1 else {
             throw RegionShotError.invalidArguments("`doctor` does not accept additional arguments.")
@@ -2808,6 +2842,243 @@ func parse(arguments: [String]) throws -> CommandBehavior {
             imageOutput: imageOutput
         )
     )
+}
+
+private func parseSubcommand(arguments: [String]) throws -> CommandBehavior? {
+    guard let subcommand = arguments.first else {
+        return nil
+    }
+
+    let trailingArguments = Array(arguments.dropFirst())
+    switch subcommand {
+    case "capture":
+        return try parseCaptureSubcommand(arguments: trailingArguments)
+    case "apps":
+        return try parseAppsSubcommand(arguments: trailingArguments)
+    case "windows":
+        return try parseWindowsSubcommand(arguments: trailingArguments)
+    case "ax":
+        return try parseAXSubcommand(arguments: trailingArguments)
+    case "menu":
+        return try parseMenuSubcommand(arguments: trailingArguments)
+    case "ascii":
+        return try parseASCIISubcommand(arguments: trailingArguments)
+    case "displays":
+        return try parseDisplaysSubcommand(arguments: trailingArguments)
+    case "doctor":
+        return isHelpRequest(trailingArguments) ? .showHelpText(doctorHelpText) : nil
+    case "clipboard":
+        return isHelpRequest(trailingArguments) ? .showHelpText(clipboardHelpText) : nil
+    case "launch":
+        return isHelpRequest(trailingArguments) ? .showHelpText(launchHelpText) : nil
+    case "activate":
+        return isHelpRequest(trailingArguments) ? .showHelpText(activateHelpText) : nil
+    case "quit":
+        return isHelpRequest(trailingArguments) ? .showHelpText(quitHelpText) : nil
+    default:
+        return nil
+    }
+}
+
+private func isHelpRequest(_ arguments: [String]) -> Bool {
+    arguments.count == 1 && (arguments[0] == "--help" || arguments[0] == "-h")
+}
+
+private func parseCaptureSubcommand(arguments: [String]) throws -> CommandBehavior {
+    if arguments.isEmpty || isHelpRequest(arguments) {
+        return .showHelpText(captureHelpText)
+    }
+
+    if let first = arguments.first, !first.hasPrefix("--"), Int(first) == nil {
+        throw RegionShotError.invalidArguments("`capture` expects rectangle coordinates or capture flags. Run `regionshot capture --help`.")
+    }
+
+    return try parse(arguments: arguments)
+}
+
+private func parseAppsSubcommand(arguments: [String]) throws -> CommandBehavior {
+    if arguments.isEmpty || isHelpRequest(arguments) {
+        return .showHelpText(appsHelpText)
+    }
+
+    guard !arguments.contains(where: { $0.hasPrefix("--") }) else {
+        throw RegionShotError.invalidArguments("`apps` accepts a search query. Run `regionshot apps --help`.")
+    }
+
+    return try parse(arguments: ["--find-app", arguments.joined(separator: " ")])
+}
+
+private func parseDisplaysSubcommand(arguments: [String]) throws -> CommandBehavior {
+    if isHelpRequest(arguments) {
+        return .showHelpText(displaysHelpText)
+    }
+
+    guard arguments.isEmpty else {
+        throw RegionShotError.invalidArguments("`displays` does not accept additional arguments. Run `regionshot displays --help`.")
+    }
+
+    return .listDisplays
+}
+
+private func parseASCIISubcommand(arguments: [String]) throws -> CommandBehavior {
+    if arguments.isEmpty || isHelpRequest(arguments) {
+        return .showHelpText(asciiHelpText)
+    }
+
+    guard let imagePath = arguments.first, !imagePath.hasPrefix("--") else {
+        throw RegionShotError.invalidArguments("`ascii` requires IMAGE before options. Run `regionshot ascii --help`.")
+    }
+
+    return try parse(arguments: ["--ascii", imagePath] + Array(arguments.dropFirst()))
+}
+
+private func parseWindowsSubcommand(arguments: [String]) throws -> CommandBehavior {
+    if arguments.isEmpty || isHelpRequest(arguments) {
+        return .showHelpText(windowsHelpText)
+    }
+
+    var forwardedArguments: [String] = []
+    var modeFlag = "--list-windows"
+    var sawModeFlag = false
+
+    for argument in arguments {
+        switch argument {
+        case "--visible":
+            guard !sawModeFlag else {
+                throw RegionShotError.invalidArguments("Choose only one of `--visible` or `--ax` for `windows`.")
+            }
+            sawModeFlag = true
+            modeFlag = "--list-visible-windows"
+        case "--ax":
+            guard !sawModeFlag else {
+                throw RegionShotError.invalidArguments("Choose only one of `--visible` or `--ax` for `windows`.")
+            }
+            sawModeFlag = true
+            modeFlag = "--list-accessibility-windows"
+        default:
+            forwardedArguments.append(argument)
+        }
+    }
+
+    return try parse(arguments: forwardedArguments + [modeFlag])
+}
+
+private let subcommandValueOptionFlags: Set<String> = [
+    "--x", "--y", "--width", "--height", "--display", "--output", "--app", "--app-name", "--pid", "--find-app",
+    "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item",
+    "--press-menu-item", "--element-at", "--wait-for-window", "--press-at", "--path", "--role", "--subrole",
+    "--title", "--identifier", "--description", "--set-value", "--type", "--key", "--click", "--drag",
+    "--scroll", "--move-window", "--resize-window", "--depth", "--max-children", "--roles", "--ascii",
+    "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language", "--format", "--quality",
+    "--max-dimension",
+]
+
+private func parseAXSubcommand(arguments: [String]) throws -> CommandBehavior {
+    if arguments.isEmpty || isHelpRequest(arguments) {
+        return .showHelpText(axHelpText)
+    }
+
+    let flagActions = [
+        "windows": "--list-accessibility-windows",
+        "tree": "--list-elements",
+        "elements": "--list-elements",
+        "get": "--get",
+        "wait-for-element": "--wait-for-element",
+        "press": "--press",
+        "raise": "--raise-window",
+        "close": "--close-window",
+        "minimize": "--minimize-window",
+    ]
+    let valueActions = [
+        "wait-for-window": "--wait-for-window",
+        "set-value": "--set-value",
+        "type": "--type",
+        "key": "--key",
+        "press-at": "--press-at",
+        "element-at": "--element-at",
+        "click": "--click",
+        "drag": "--drag",
+        "scroll": "--scroll",
+        "move": "--move-window",
+        "resize": "--resize-window",
+    ]
+
+    guard let translated = try translateActionSubcommand(
+        name: "ax",
+        arguments: arguments,
+        flagActions: flagActions,
+        valueActions: valueActions
+    ) else {
+        return .showHelpText(axHelpText)
+    }
+    return try parse(arguments: translated)
+}
+
+private func parseMenuSubcommand(arguments: [String]) throws -> CommandBehavior {
+    if arguments.isEmpty || isHelpRequest(arguments) {
+        return .showHelpText(menuHelpText)
+    }
+
+    guard let translated = try translateActionSubcommand(
+        name: "menu",
+        arguments: arguments,
+        flagActions: [
+            "list": "--list-menu-bar-items",
+            "press": "--press",
+            "capture": "--capture-menu",
+        ],
+        valueActions: [
+            "press-item": "--press-menu-item",
+        ]
+    ) else {
+        return .showHelpText(menuHelpText)
+    }
+    return try parse(arguments: translated)
+}
+
+private func translateActionSubcommand(
+    name: String,
+    arguments: [String],
+    flagActions: [String: String],
+    valueActions: [String: String]
+) throws -> [String]? {
+    var forwardedArguments: [String] = []
+    var actionArguments: [String] = []
+    var foundAction = false
+    var index = 0
+
+    while index < arguments.count {
+        let argument = arguments[index]
+
+        if !foundAction, let flag = flagActions[argument] {
+            foundAction = true
+            actionArguments.append(flag)
+            index += 1
+            continue
+        }
+
+        if !foundAction, let flag = valueActions[argument] {
+            let valueIndex = index + 1
+            guard valueIndex < arguments.count else {
+                throw RegionShotError.invalidArguments("`\(name) \(argument)` requires a value. Run `regionshot \(name) --help`.")
+            }
+
+            foundAction = true
+            actionArguments.append(contentsOf: [flag, arguments[valueIndex]])
+            index += 2
+            continue
+        }
+
+        forwardedArguments.append(argument)
+        if subcommandValueOptionFlags.contains(argument), index + 1 < arguments.count {
+            forwardedArguments.append(arguments[index + 1])
+            index += 2
+        } else {
+            index += 1
+        }
+    }
+
+    return foundAction ? forwardedArguments + actionArguments : nil
 }
 
 private func parseRawArguments(_ arguments: [String]) throws -> ParsedArguments {

@@ -51,20 +51,21 @@ again.
 ## Common Commands
 
 ```bash
-regionshot 0 0 800 600
-regionshot --list-displays
-regionshot --display DISPLAY_ID --output ~/Desktop/display.png
-regionshot --find-app Terminal
-regionshot --app Terminal --list-accessibility-windows
-regionshot --app Terminal --window-index 0 --raise-window
-regionshot --app Terminal --list-visible-windows
-regionshot --app Terminal --visible-window --output ~/Desktop/terminal.png
-regionshot --app Drafty --list-menu-bar-items
-regionshot --app Drafty --menu-bar-index 0 --press-menu-item "Quick Tasks"
-regionshot --ascii ~/Desktop/terminal.png
+regionshot capture 0 0 800 600
+regionshot displays
+regionshot capture --display DISPLAY_ID --output ~/Desktop/display.png
+regionshot apps Terminal
+regionshot ax --app Terminal windows
+regionshot ax --app Terminal raise --window-index 0
+regionshot windows --app Terminal --visible
+regionshot capture --app Terminal --visible-window --output ~/Desktop/terminal.png
+regionshot menu --app Drafty list
+regionshot menu --app Drafty press-item "Quick Tasks" --menu-bar-index 0
+regionshot ascii ~/Desktop/terminal.png
 ```
 
-Running `regionshot` without arguments prints a short command summary.
+Running `regionshot` without arguments prints a short command summary. Existing
+flag-first commands remain accepted for compatibility.
 
 For the full command guide, see [docs/usage.md](docs/usage.md).
 

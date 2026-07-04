@@ -31,6 +31,129 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
+    func testSubcommandHelpParsing() throws {
+        let behavior = try parse(arguments: ["capture", "--help"])
+
+        guard case .showHelpText(let text) = behavior else {
+            return XCTFail("Expected focused help behavior.")
+        }
+
+        XCTAssertTrue(text.contains("regionshot capture"))
+
+        let doctorBehavior = try parse(arguments: ["doctor", "--help"])
+        guard case .showHelpText(let doctorText) = doctorBehavior else {
+            return XCTFail("Expected doctor help behavior.")
+        }
+
+        XCTAssertTrue(doctorText.contains("regionshot doctor"))
+    }
+
+    func testCaptureSubcommandForwardsToLegacyCaptureParser() throws {
+        let behavior = try parse(arguments: ["capture", "1", "2", "3", "4", "--raw"])
+
+        guard case .capture(let command) = behavior else {
+            return XCTFail("Expected capture behavior.")
+        }
+
+        XCTAssertEqual(command.region?.x, 1)
+        XCTAssertTrue(command.rawOutput)
+    }
+
+    func testAppsAndDisplaysSubcommands() throws {
+        let appsBehavior = try parse(arguments: ["apps", "Terminal"])
+
+        guard case .findApps(let command) = appsBehavior else {
+            return XCTFail("Expected find-app behavior.")
+        }
+
+        XCTAssertEqual(command.query, "Terminal")
+
+        let displaysBehavior = try parse(arguments: ["displays"])
+        guard case .listDisplays = displaysBehavior else {
+            return XCTFail("Expected display list behavior.")
+        }
+    }
+
+    func testWindowsSubcommandModes() throws {
+        let visibleBehavior = try parse(arguments: ["windows", "--app", "Terminal", "--visible"])
+        guard case .listVisibleWindows = visibleBehavior else {
+            return XCTFail("Expected visible-window list behavior.")
+        }
+
+        let accessibilityBehavior = try parse(arguments: ["windows", "--app", "Terminal", "--ax"])
+        guard case .inspectAccessibility(let command) = accessibilityBehavior else {
+            return XCTFail("Expected accessibility window list behavior.")
+        }
+
+        guard case .listWindows = command.mode else {
+            return XCTFail("Expected accessibility window list mode.")
+        }
+    }
+
+    func testAXSubcommandActions() throws {
+        let treeBehavior = try parse(arguments: [
+            "ax",
+            "--app", "Terminal",
+            "tree",
+            "--depth", "2",
+        ])
+
+        guard case .inspectAccessibility(let treeCommand) = treeBehavior else {
+            return XCTFail("Expected accessibility behavior.")
+        }
+
+        guard case .listElements = treeCommand.mode else {
+            return XCTFail("Expected tree mode.")
+        }
+
+        XCTAssertEqual(treeCommand.treeDepth, 2)
+
+        let getBehavior = try parse(arguments: [
+            "ax",
+            "--app", "Terminal",
+            "get",
+            "--path", "0.1",
+        ])
+
+        guard case .inspectAccessibility(let getCommand) = getBehavior else {
+            return XCTFail("Expected accessibility behavior.")
+        }
+
+        guard case .getElement(let selector) = getCommand.mode else {
+            return XCTFail("Expected get mode.")
+        }
+
+        XCTAssertEqual(selector.path, "0.1")
+    }
+
+    func testMenuAndAsciiSubcommands() throws {
+        let menuBehavior = try parse(arguments: [
+            "menu",
+            "--app", "Drafty",
+            "press-item",
+            "Quick Tasks",
+            "--menu-bar-index", "0",
+        ])
+
+        guard case .menuBar(let command) = menuBehavior else {
+            return XCTFail("Expected menu-bar behavior.")
+        }
+
+        guard case .pressMenuItem(let selection) = command.mode else {
+            return XCTFail("Expected press-item mode.")
+        }
+
+        XCTAssertEqual(selection.query, "Quick Tasks")
+
+        let asciiBehavior = try parse(arguments: ["ascii", "/tmp/screenshot.png", "--ocr-only"])
+        guard case .asciiArt(let asciiCommand) = asciiBehavior else {
+            return XCTFail("Expected ascii behavior.")
+        }
+
+        XCTAssertEqual(asciiCommand.imageURL.path, "/tmp/screenshot.png")
+        XCTAssertEqual(asciiCommand.outputMode, .ocrOnly)
+    }
+
     func testDoctorParsing() throws {
         let subcommandBehavior = try parse(arguments: ["doctor"])
         guard case .doctor = subcommandBehavior else {
