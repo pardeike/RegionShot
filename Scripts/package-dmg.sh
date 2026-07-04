@@ -36,6 +36,7 @@ fi
 
 rm -rf "$release_dir"
 mkdir -p "$payload_dir/.regionshot-support"
+printf '%s\n' "$version" > "$payload_dir/.regionshot-support/VERSION"
 
 swift build \
   --package-path "$project_dir" \
@@ -62,6 +63,9 @@ mkdir -p "$install_dir" "$support_root"
 /usr/bin/install -m 755 "$source_dir/regionshot" "$install_dir/regionshot"
 rm -rf "$support_root/Codex"
 ditto "$source_dir/.regionshot-support/Codex" "$support_root/Codex"
+if [[ -f "$source_dir/.regionshot-support/VERSION" ]]; then
+  /usr/bin/install -m 644 "$source_dir/.regionshot-support/VERSION" "$support_root/VERSION"
+fi
 
 echo "Installed regionshot to $install_dir/regionshot"
 echo "Installed Codex support files to $support_root/Codex"

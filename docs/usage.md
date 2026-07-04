@@ -3,6 +3,12 @@
 This page lists the main command forms. Run `regionshot --help` for the exact
 help text from the installed binary.
 
+## Version
+
+```bash
+regionshot --version
+```
+
 ## Basic Capture
 
 ```bash

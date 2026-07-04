@@ -19,6 +19,8 @@ struct RegionShot {
             switch behavior {
             case .showHelp:
                 print(usageText)
+            case .showVersion:
+                print("regionshot \(currentRegionShotVersion())")
             case .findApps(let command):
                 let json = try findApps(using: command)
                 print(json)
@@ -57,6 +59,7 @@ struct RegionShot {
 
 enum CommandBehavior: Sendable {
     case showHelp
+    case showVersion
     case findApps(FindAppsCommand)
     case asciiArt(AsciiArtCommand)
     case capture(CaptureCommand)
@@ -673,6 +676,7 @@ Output:
   errors -> stderr, non-zero exit
 
 Forms:
+  regionshot --version
   regionshot --find-app TEXT
   regionshot --ascii IMAGE [--ascii-style layout|tone] [--ascii-width N] [--ascii-max-height N] [--ascii-language CODE[,CODE...]] [--ascii-invert] [--ascii-no-ocr]
   regionshot X Y WIDTH HEIGHT [--app APP] [--output FILE]
@@ -711,6 +715,7 @@ Forms:
   regionshot --app APP --window-name TITLE --element-at X,Y
 
 Rules:
+  `--version` prints the binary version and exits
   `--app` accepts app name, bundle id, or pid
   use `--find-app TEXT` when the exact running app name or pid is unknown
   `--ascii IMAGE` reads an existing screenshot/image and prints text-first layout ASCII plus OCR text
@@ -755,6 +760,109 @@ Exit codes:
 private let codexSkillName = "regionshot"
 private let codexManagedAgentsStartMarker = "<!-- regionshot-managed:start -->"
 private let codexManagedAgentsEndMarker = "<!-- regionshot-managed:end -->"
+private let regionShotFallbackVersion = "1.0.0"
+private let regionShotVersionEnvironmentKey = "REGIONSHOT_VERSION"
+private let regionShotSupportDirectoryName = ".regionshot-support"
+private let regionShotSupportVersionFilename = "VERSION"
+
+private func currentRegionShotVersion() -> String {
+    regionShotVersion(
+        environment: ProcessInfo.processInfo.environment,
+        executableDirectory: currentExecutableURL()?.deletingLastPathComponent(),
+        currentDirectoryURL: URL(
+            fileURLWithPath: FileManager.default.currentDirectoryPath,
+            isDirectory: true
+        ),
+        readTextFile: readTextFileIfPresent,
+        gitDescribe: gitDescribeVersion
+    )
+}
+
+func regionShotVersion(
+    environment: [String: String],
+    executableDirectory: URL?,
+    currentDirectoryURL: URL,
+    readTextFile: (URL) -> String?,
+    gitDescribe: (URL) -> String?
+) -> String {
+    if let environmentVersion = normalizedVersion(environment[regionShotVersionEnvironmentKey]) {
+        return environmentVersion
+    }
+
+    if
+        let executableDirectory,
+        let supportVersion = normalizedVersion(
+            readTextFile(
+                executableDirectory
+                    .appendingPathComponent(regionShotSupportDirectoryName, isDirectory: true)
+                    .appendingPathComponent(regionShotSupportVersionFilename)
+            )
+        )
+    {
+        return supportVersion
+    }
+
+    if let gitVersion = normalizedVersion(gitDescribe(currentDirectoryURL)) {
+        return gitVersion
+    }
+
+    return regionShotFallbackVersion
+}
+
+private func normalizedVersion(_ rawValue: String?) -> String? {
+    guard let rawValue else {
+        return nil
+    }
+
+    let version = rawValue
+        .components(separatedBy: .newlines)
+        .first?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+
+    guard let version, !version.isEmpty else {
+        return nil
+    }
+
+    return version
+}
+
+private func readTextFileIfPresent(at url: URL) -> String? {
+    try? String(contentsOf: url, encoding: .utf8)
+}
+
+private func gitDescribeVersion(repositoryURL: URL) -> String? {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    process.arguments = [
+        "-C",
+        repositoryURL.path,
+        "describe",
+        "--tags",
+        "--always",
+        "--dirty",
+    ]
+
+    let standardOutput = Pipe()
+    let standardError = Pipe()
+    process.standardOutput = standardOutput
+    process.standardError = standardError
+
+    do {
+        try process.run()
+        process.waitUntilExit()
+    } catch {
+        return nil
+    }
+
+    guard process.terminationStatus == 0 else {
+        return nil
+    }
+
+    return String(
+        decoding: standardOutput.fileHandleForReading.readDataToEndOfFile(),
+        as: UTF8.self
+    )
+}
 
 private func synchronizeCodexIntegrationIfAvailable() {
     do {
@@ -1050,6 +1158,10 @@ func parse(arguments: [String]) throws -> CommandBehavior {
 
     if parsed.flags.contains("--help") || parsed.flags.contains("-h") {
         return .showHelp
+    }
+
+    if parsed.flags.contains("--version") {
+        return .showVersion
     }
 
     let applicationSelector = parsed.values["--app"].map(ApplicationSelector.init(rawValue:))
@@ -1498,7 +1610,7 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         let argument = arguments[index]
 
         switch argument {
-        case "--help", "-h", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--press", "--press-element", "--raise-window", "--raise", "--capture-menu", "--ascii-invert", "--ascii-no-ocr":
+        case "--help", "-h", "--version", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--press", "--press-element", "--raise-window", "--raise", "--capture-menu", "--ascii-invert", "--ascii-no-ocr":
             flags.insert(argument)
             index += 1
         case "--x", "--y", "--width", "--height", "--output", "--app", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":

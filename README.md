@@ -32,6 +32,7 @@ Check the install:
 
 ```bash
 command -v regionshot
+regionshot --version
 regionshot --help
 ```
 

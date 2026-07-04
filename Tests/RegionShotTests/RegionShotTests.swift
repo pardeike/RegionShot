@@ -15,6 +15,14 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(command.query, "RimWorld")
     }
 
+    func testVersionParsing() throws {
+        let behavior = try parse(arguments: ["--version"])
+
+        guard case .showVersion = behavior else {
+            return XCTFail("Expected version behavior.")
+        }
+    }
+
     func testAsciiArtParsing() throws {
         let behavior = try parse(arguments: [
             "--ascii", "/tmp/screenshot.png",
@@ -425,6 +433,74 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(requestWithExplicitLanguages.recognitionLevel, .accurate)
         XCTAssertTrue(requestWithExplicitLanguages.usesLanguageCorrection)
         XCTAssertEqual(requestWithExplicitLanguages.recognitionLanguages, ["de-DE", "sv-SE"])
+    }
+
+    func testRegionShotVersionPrefersEnvironmentOverride() {
+        let version = regionShotVersion(
+            environment: ["REGIONSHOT_VERSION": " 2.0.0 \n"],
+            executableDirectory: URL(fileURLWithPath: "/tmp/bin", isDirectory: true),
+            currentDirectoryURL: URL(fileURLWithPath: "/tmp/repo", isDirectory: true),
+            readTextFile: { _ in "1.0.0" },
+            gitDescribe: { _ in "v1.0.0" }
+        )
+
+        XCTAssertEqual(version, "2.0.0")
+    }
+
+    func testRegionShotVersionReadsInstalledSupportFile() {
+        let executableDirectory = URL(fileURLWithPath: "/tmp/bin", isDirectory: true)
+        var gitDescribeWasCalled = false
+        var requestedURLs: [URL] = []
+
+        let version = regionShotVersion(
+            environment: [:],
+            executableDirectory: executableDirectory,
+            currentDirectoryURL: URL(fileURLWithPath: "/tmp/repo", isDirectory: true),
+            readTextFile: { url in
+                requestedURLs.append(url)
+                return "1.2.3\nignored"
+            },
+            gitDescribe: { _ in
+                gitDescribeWasCalled = true
+                return "v1.0.0"
+            }
+        )
+
+        XCTAssertEqual(version, "1.2.3")
+        XCTAssertEqual(
+            requestedURLs,
+            [
+                executableDirectory
+                    .appendingPathComponent(".regionshot-support", isDirectory: true)
+                    .appendingPathComponent("VERSION"),
+            ]
+        )
+        XCTAssertFalse(gitDescribeWasCalled)
+    }
+
+    func testRegionShotVersionFallsBackToGitDescribeThenSourceVersion() {
+        let gitVersion = regionShotVersion(
+            environment: [:],
+            executableDirectory: nil,
+            currentDirectoryURL: URL(fileURLWithPath: "/tmp/repo", isDirectory: true),
+            readTextFile: { _ in nil },
+            gitDescribe: { url in
+                XCTAssertEqual(url.path, "/tmp/repo")
+                return "v1.0.0-4-gabcdef"
+            }
+        )
+
+        XCTAssertEqual(gitVersion, "v1.0.0-4-gabcdef")
+
+        let fallbackVersion = regionShotVersion(
+            environment: [:],
+            executableDirectory: nil,
+            currentDirectoryURL: URL(fileURLWithPath: "/tmp/repo", isDirectory: true),
+            readTextFile: { _ in nil },
+            gitDescribe: { _ in nil }
+        )
+
+        XCTAssertEqual(fallbackVersion, "1.0.0")
     }
 
     func testVisibleWindowCatalogFiltersToNormalVisibleWindows() {

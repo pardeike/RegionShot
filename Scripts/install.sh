@@ -9,6 +9,11 @@ target_path="$install_dir/$product_name"
 support_source_dir="$project_dir/Codex"
 support_root_dir="$install_dir/.regionshot-support"
 support_target_dir="$support_root_dir/Codex"
+version="${VERSION:-}"
+
+if [[ -z "$version" ]]; then
+  version="$(git -C "$project_dir" describe --tags --always --dirty)"
+fi
 
 identity="${CODESIGN_IDENTITY:-}"
 if [[ -z "$identity" ]]; then
@@ -45,12 +50,14 @@ fi
 rm -rf "$support_target_dir"
 mkdir -p "$support_root_dir"
 ditto "$support_source_dir" "$support_target_dir"
+printf '%s\n' "$version" > "$support_root_dir/VERSION"
 
 codesign --force --sign "$identity" "$target_path"
 codesign --verify --verbose "$target_path"
 
 echo "Installed $product_name to $target_path"
 echo "Installed Codex support files to $support_target_dir"
+echo "Installed version metadata to $support_root_dir/VERSION"
 if [[ "$identity" == "-" ]]; then
   echo "Signed ad-hoc"
 else
