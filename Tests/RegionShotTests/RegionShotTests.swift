@@ -385,11 +385,77 @@ final class RegionShotTests: XCTestCase {
         XCTAssertTrue(command.rawOutput)
     }
 
+    func testRectangleCaptureParsingSupportsWithAscii() throws {
+        let behavior = try parse(arguments: [
+            "1",
+            "2",
+            "3",
+            "4",
+            "--with-ascii",
+            "--ascii-width", "80",
+            "--ascii-max-height", "40",
+            "--ascii-language", "sv-SE",
+            "--ascii-no-ocr",
+        ])
+
+        guard case .capture(let command) = behavior else {
+            return XCTFail("Expected capture behavior.")
+        }
+
+        let textOutput = try XCTUnwrap(command.textOutput)
+        XCTAssertEqual(textOutput.outputMode, .report)
+        XCTAssertEqual(textOutput.width, 80)
+        XCTAssertEqual(textOutput.maxHeight, 40)
+        XCTAssertEqual(textOutput.recognitionLanguages, ["sv-SE"])
+        XCTAssertFalse(textOutput.includeOCR)
+    }
+
+    func testRectangleCaptureParsingSupportsWithOCR() throws {
+        let behavior = try parse(arguments: [
+            "1",
+            "2",
+            "3",
+            "4",
+            "--with-ocr",
+            "--ascii-language", "de-DE",
+        ])
+
+        guard case .capture(let command) = behavior else {
+            return XCTFail("Expected capture behavior.")
+        }
+
+        let textOutput = try XCTUnwrap(command.textOutput)
+        XCTAssertEqual(textOutput.outputMode, .ocrOnly)
+        XCTAssertEqual(textOutput.recognitionLanguages, ["de-DE"])
+    }
+
     func testRawOutputRejectsStructuredModes() {
         XCTAssertThrowsError(
             try parse(arguments: ["--app", "Terminal", "--list-windows", "--raw"])
         ) { error in
             XCTAssertTrue(String(describing: error).contains("--raw"))
+        }
+    }
+
+    func testCaptureTextOptionsRejectRawAndNonCaptureModes() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["1", "2", "3", "4", "--with-ascii", "--raw"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--raw"))
+        }
+
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--with-ascii"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--with-ascii"))
+        }
+    }
+
+    func testWithOCRRejectsRenderOnlyAsciiOptions() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["1", "2", "3", "4", "--with-ocr", "--ascii-width", "80"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--with-ocr"))
         }
     }
 
@@ -1397,6 +1463,16 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(
             try reportEnvelopeJSON(mode: "ascii", report: "layout\ntext", version: "1.2.3"),
             #"{"mode":"ascii","ok":true,"report":"layout\ntext","version":"1.2.3"}"#
+        )
+
+        XCTAssertEqual(
+            try outputReportEnvelopeJSON(mode: "capture", output: "/tmp/region.png", report: "image\nreport", version: "1.2.3"),
+            #"{"mode":"capture","ok":true,"output":"/tmp/region.png","report":"image\nreport","version":"1.2.3"}"#
+        )
+
+        XCTAssertEqual(
+            try outputDataEnvelopeJSON(mode: "capture", output: "/tmp/region.png", dataJSON: #"{"blocks":[]}"#, version: "1.2.3"),
+            #"{"data":{"blocks":[]},"mode":"capture","ok":true,"output":"/tmp/region.png","version":"1.2.3"}"#
         )
     }
 

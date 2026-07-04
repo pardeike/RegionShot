@@ -8,11 +8,14 @@ help text from the installed binary.
 Commands return compact JSON envelopes on stdout by default. Successful
 responses include `ok`, `mode`, `version`, and one mode-specific field:
 `data` for structured inspection/action results, `output` for a written capture
-file, or `report` for ASCII report text. Errors are compact JSON envelopes on
-stderr with `error.kind`, `error.message`, and `error.exitCode`.
+file, or `report` for ASCII report text. Capture commands can include
+`--with-ascii` to add `report`, or `--with-ocr` to add OCR-only `data`, for the
+same written PNG. Errors are compact JSON envelopes on stderr with
+`error.kind`, `error.message`, and `error.exitCode`.
 
 Add `--raw` to capture, menu-capture, or ASCII commands when a script needs the
-legacy bare path or report output.
+legacy bare path or report output. `--raw` cannot be combined with
+`--with-ascii` or `--with-ocr`.
 
 ## Version
 
@@ -80,6 +83,8 @@ regionshot 120 240 800 600
 regionshot --x 120 --y 240 --width 800 --height 600
 regionshot 120 240 800 600 --output ~/Desktop/region.png
 regionshot 120 240 800 600 --raw
+regionshot 120 240 800 600 --with-ascii
+regionshot 120 240 800 600 --with-ocr
 ```
 
 Without `--app`, rectangle capture uses ScreenCaptureKit display capture for
@@ -87,6 +92,13 @@ the visible pixels in that screen region.
 
 By default, capture commands create a temporary file and return its path as
 `output`. Add `--raw` to print only the path.
+
+Use `--with-ascii` when the next step is text inspection; RegionShot captures
+the PNG, runs the existing ASCII/OCR renderer on that file, and returns both
+`output` and `report` in one envelope. Use `--with-ocr` when only OCR blocks are
+needed; it returns `output` plus OCR `data` without rendering the ASCII canvas.
+The usual ASCII sizing and language options can be used with `--with-ascii`;
+`--with-ocr` accepts `--ascii-language`.
 
 ## Find Apps
 

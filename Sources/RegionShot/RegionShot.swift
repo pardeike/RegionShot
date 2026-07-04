@@ -58,14 +58,22 @@ struct RegionShot {
                 if command.rawOutput {
                     print(command.outputURL.path)
                 } else {
-                    print(try outputEnvelopeJSON(mode: "capture", output: command.outputURL.path))
+                    print(try await captureOutputEnvelopeJSON(
+                        mode: "capture",
+                        outputURL: command.outputURL,
+                        textOutput: command.textOutput
+                    ))
                 }
             case .captureVisibleWindow(let command):
                 try await captureVisibleWindow(using: command)
                 if command.rawOutput {
                     print(command.outputURL.path)
                 } else {
-                    print(try outputEnvelopeJSON(mode: "visible-window", output: command.outputURL.path))
+                    print(try await captureOutputEnvelopeJSON(
+                        mode: "visible-window",
+                        outputURL: command.outputURL,
+                        textOutput: command.textOutput
+                    ))
                 }
             case .listWindows(let command):
                 let json = try await listWindows(using: command)
@@ -82,7 +90,11 @@ struct RegionShot {
                     if command.rawOutput {
                         print(result)
                     } else {
-                        print(try outputEnvelopeJSON(mode: "menu.capture", output: result))
+                        print(try await captureOutputEnvelopeJSON(
+                            mode: "menu.capture",
+                            outputURL: URL(fileURLWithPath: result),
+                            textOutput: command.textOutput
+                        ))
                     }
                 } else {
                     print(try dataEnvelopeJSON(mode: command.mode.envelopeMode, dataJSON: result))
@@ -160,6 +172,7 @@ struct CaptureCommand: Sendable {
     let windowCrop: WindowCropRect?
     let screenCaptureTimeout: TimeInterval
     let rawOutput: Bool
+    let textOutput: CaptureTextOptions?
 }
 
 struct FindAppsCommand: Sendable {
@@ -198,6 +211,7 @@ struct VisibleWindowCaptureCommand: Sendable {
     let outputURL: URL
     let screenCaptureTimeout: TimeInterval
     let rawOutput: Bool
+    let textOutput: CaptureTextOptions?
 }
 
 struct AccessibilityCommand: Sendable {
@@ -219,10 +233,21 @@ struct MenuBarCommand: Sendable {
     let outputURL: URL?
     let screenCaptureTimeout: TimeInterval
     let rawOutput: Bool
+    let textOutput: CaptureTextOptions?
 }
 
 struct MenuChildSelection: Sendable {
     let query: String
+}
+
+struct CaptureTextOptions: Sendable {
+    let outputMode: AsciiOutputMode
+    let style: AsciiArtStyle
+    let width: Int
+    let maxHeight: Int
+    let invert: Bool
+    let includeOCR: Bool
+    let recognitionLanguages: [String]
 }
 
 struct AccessibilitySelector: Sendable {
@@ -692,6 +717,14 @@ private struct OutputEnvelope: Encodable {
 private struct ReportEnvelope: Encodable {
     let mode: String
     let ok: Bool
+    let report: String
+    let version: String
+}
+
+private struct OutputReportEnvelope: Encodable {
+    let mode: String
+    let ok: Bool
+    let output: String
     let report: String
     let version: String
 }
@@ -1173,6 +1206,7 @@ Output:
   capture/menu-capture -> writes a PNG file and returns the path as `output`
   inspect/action modes -> return their mode-specific payload as `data`
   ascii report mode -> returns layout ASCII and OCR text as `report`
+  add `--with-ascii` or `--with-ocr` to capture forms to include text from the written PNG
   errors -> compact JSON envelope on stderr with `error.kind`, `message`, and `exitCode`
   add `--raw` to capture, menu-capture, or ascii forms for legacy bare path/report output
 
@@ -1186,16 +1220,16 @@ Forms:
   regionshot --find-app TEXT
   regionshot --list-displays
   regionshot --ascii IMAGE [--ascii-style layout|tone] [--ascii-width N] [--ascii-max-height N] [--ascii-language CODE[,CODE...]] [--ascii-invert] [--ascii-no-ocr] [--ocr-only] [--raw]
-  regionshot X Y WIDTH HEIGHT [--app APP] [--output FILE] [--raw]
-  regionshot --x X --y Y --width WIDTH --height HEIGHT [--app APP] [--output FILE] [--raw]
+  regionshot X Y WIDTH HEIGHT [--app APP] [--output FILE] [--with-ascii | --with-ocr] [--raw]
+  regionshot --x X --y Y --width WIDTH --height HEIGHT [--app APP] [--output FILE] [--with-ascii | --with-ocr] [--raw]
   regionshot --app APP [--timeout SECONDS]
   regionshot --pid PID [--timeout SECONDS]
   regionshot --app-name NAME [--timeout SECONDS]
-  regionshot --app APP --frontmost-window [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--raw]
-  regionshot --app APP --window-index N [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--raw]
-  regionshot --app APP --window-name TITLE [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--raw]
+  regionshot --app APP --frontmost-window [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--with-ascii | --with-ocr] [--raw]
+  regionshot --app APP --window-index N [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--with-ascii | --with-ocr] [--raw]
+  regionshot --app APP --window-name TITLE [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--with-ascii | --with-ocr] [--raw]
   regionshot --app APP --list-visible-windows
-  regionshot --app APP --visible-window [--window-index N | --window-name TITLE | --frontmost-window] [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--raw]
+  regionshot --app APP --visible-window [--window-index N | --window-name TITLE | --frontmost-window] [--window-crop X,Y,W,H] [--output FILE] [--timeout SECONDS] [--with-ascii | --with-ocr] [--raw]
   regionshot --app APP --list-accessibility-windows
   regionshot --app APP --raise-window [--window-index N | --window-name TITLE | --frontmost-window]
   regionshot --app APP --close-window [--window-index N | --window-name TITLE | --frontmost-window]
@@ -1203,13 +1237,13 @@ Forms:
   regionshot --app APP --move-window X,Y [--window-index N | --window-name TITLE | --frontmost-window]
   regionshot --app APP --resize-window W,H [--window-index N | --window-name TITLE | --frontmost-window]
   regionshot --app APP --list-menu-bar-items
-  regionshot --app APP --capture-menu [--output FILE] [--timeout SECONDS] [--raw]
+  regionshot --app APP --capture-menu [--output FILE] [--timeout SECONDS] [--with-ascii | --with-ocr] [--raw]
   regionshot --app APP --menu-bar-index N --press
   regionshot --app APP --menu-bar-index N --press-menu-item TEXT
-  regionshot --app APP --menu-bar-index N --capture-menu [--output FILE] [--timeout SECONDS] [--raw]
+  regionshot --app APP --menu-bar-index N --capture-menu [--output FILE] [--timeout SECONDS] [--with-ascii | --with-ocr] [--raw]
   regionshot --app APP --menu-bar-item TEXT --press
   regionshot --app APP --menu-bar-item TEXT --press-menu-item TEXT
-  regionshot --app APP --menu-bar-item TEXT --capture-menu [--output FILE] [--timeout SECONDS] [--raw]
+  regionshot --app APP --menu-bar-item TEXT --capture-menu [--output FILE] [--timeout SECONDS] [--with-ascii | --with-ocr] [--raw]
   regionshot --app APP --list-elements [--depth N] [--max-children N] [--roles ROLE[,ROLE...]] [--interactive] [--flat]
   regionshot --app APP --wait-for-window TITLE [--timeout SECONDS]
   regionshot --app APP --get --path PATH
@@ -1267,6 +1301,7 @@ Rules:
   `--ascii-language` passes one or more comma-separated OCR language codes to Vision; omit it for Vision's default detection
   `--ascii-invert` flips light/dark mapping for tone style; `--ascii-no-ocr` disables Vision text recognition
   `--ocr-only` returns OCR blocks without rendering the ASCII canvas
+  `--with-ascii` appends the ASCII report to capture output; `--with-ocr` appends OCR blocks only
   `--app` alone == inspect mode == same as `--list-windows`
   window list data includes frontmost-first indices, titles, and bounds
   `--visible-window` uses visible pixels from the current screen, including floating panels; occluding windows are included
@@ -2131,14 +2166,17 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     let wantsAsciiNoOCR = parsed.flags.contains("--ascii-no-ocr")
     let wantsOCROnly = parsed.flags.contains("--ocr-only")
     let wantsRawOutput = parsed.flags.contains("--raw")
+    let wantsWithAscii = parsed.flags.contains("--with-ascii")
+    let wantsWithOCR = parsed.flags.contains("--with-ocr")
     let asciiDefaultWidth = asciiStyle == .layout ? defaultLayoutAsciiWidth : defaultToneAsciiWidth
     let asciiDefaultMaxHeight = asciiStyle == .layout ? defaultLayoutAsciiMaxHeight : defaultToneAsciiMaxHeight
-    let hasAsciiOption = parsed.values["--ascii-width"] != nil ||
+    let hasAsciiRenderOption = parsed.values["--ascii-width"] != nil ||
         parsed.values["--ascii-max-height"] != nil ||
         parsed.values["--ascii-style"] != nil ||
-        parsed.values["--ascii-language"] != nil ||
         wantsAsciiInvert ||
-        wantsAsciiNoOCR ||
+        wantsAsciiNoOCR
+    let hasAsciiOption = hasAsciiRenderOption ||
+        parsed.values["--ascii-language"] != nil ||
         wantsOCROnly
 
     if parsed.values["--find-app"] != nil, findAppQuery == nil {
@@ -2205,7 +2243,21 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     }
 
     if hasAsciiOption {
-        throw RegionShotError.invalidArguments("`--ascii-style`, `--ascii-width`, `--ascii-max-height`, `--ascii-language`, `--ascii-invert`, `--ascii-no-ocr`, and `--ocr-only` require `--ascii IMAGE`.")
+        if !wantsWithAscii, !wantsWithOCR {
+            throw RegionShotError.invalidArguments("`--ascii-style`, `--ascii-width`, `--ascii-max-height`, `--ascii-language`, `--ascii-invert`, `--ascii-no-ocr`, and `--ocr-only` require `--ascii IMAGE`, `--with-ascii`, or `--with-ocr`.")
+        }
+    }
+
+    if wantsWithAscii, wantsWithOCR {
+        throw RegionShotError.invalidArguments("Choose only one of `--with-ascii` or `--with-ocr`.")
+    }
+
+    if wantsWithOCR, hasAsciiRenderOption || wantsOCROnly {
+        throw RegionShotError.invalidArguments("`--with-ocr` can only be combined with `--ascii-language`; rendering options require `--with-ascii`.")
+    }
+
+    if wantsWithAscii, wantsOCROnly {
+        throw RegionShotError.invalidArguments("`--ocr-only` requires `--ascii IMAGE`; use `--with-ocr` for capture modes.")
     }
 
     if let findAppQuery {
@@ -2328,9 +2380,43 @@ func parse(arguments: [String]) throws -> CommandBehavior {
 
     let rawCapturesRectangle = parsed.region != nil && accessibilityMode == nil && menuBarMode == nil && !wantsWindowList && !wantsVisibleWindowList
     let rawCapturesAppWindow = applicationSelector != nil && windowSelection != nil && accessibilityMode == nil && menuBarMode == nil && !wantsWindowList && !wantsVisibleWindowList && !wantsVisibleWindowCapture
-    let rawIsSupported = wantsCaptureMenu || wantsVisibleWindowCapture || rawCapturesRectangle || rawCapturesAppWindow
+    let captureTextIsSupported = wantsCaptureMenu || wantsVisibleWindowCapture || rawCapturesRectangle || rawCapturesAppWindow
+    let rawIsSupported = captureTextIsSupported
     if wantsRawOutput, !rawIsSupported {
         throw RegionShotError.invalidArguments("`--raw` is only supported for capture output, `--capture-menu`, and `--ascii IMAGE`.")
+    }
+
+    if wantsRawOutput, wantsWithAscii || wantsWithOCR {
+        throw RegionShotError.invalidArguments("`--raw` cannot be combined with `--with-ascii` or `--with-ocr`; raw output can only print the legacy path.")
+    }
+
+    if (wantsWithAscii || wantsWithOCR), !captureTextIsSupported {
+        throw RegionShotError.invalidArguments("`--with-ascii` and `--with-ocr` require a capture mode.")
+    }
+
+    let captureTextOutput: CaptureTextOptions?
+    if wantsWithAscii || wantsWithOCR {
+        captureTextOutput = CaptureTextOptions(
+            outputMode: wantsWithOCR ? .ocrOnly : .report,
+            style: asciiStyle,
+            width: try parseAsciiDimension(
+                parsed.values["--ascii-width"],
+                flag: "--ascii-width",
+                defaultValue: asciiDefaultWidth,
+                allowedRange: asciiWidthRange
+            ),
+            maxHeight: try parseAsciiDimension(
+                parsed.values["--ascii-max-height"],
+                flag: "--ascii-max-height",
+                defaultValue: asciiDefaultMaxHeight,
+                allowedRange: asciiMaxHeightRange
+            ),
+            invert: wantsAsciiInvert,
+            includeOCR: !wantsAsciiNoOCR,
+            recognitionLanguages: asciiRecognitionLanguages
+        )
+    } else {
+        captureTextOutput = nil
     }
 
     if windowSelection != nil, applicationSelector == nil {
@@ -2538,7 +2624,8 @@ func parse(arguments: [String]) throws -> CommandBehavior {
                 mode: menuBarMode,
                 outputURL: wantsCaptureMenu ? try outputURL(from: outputPath) : nil,
                 screenCaptureTimeout: screenCaptureTimeout,
-                rawOutput: wantsRawOutput
+                rawOutput: wantsRawOutput,
+                textOutput: captureTextOutput
             )
         )
     }
@@ -2563,7 +2650,8 @@ func parse(arguments: [String]) throws -> CommandBehavior {
                 windowCrop: windowCrop,
                 outputURL: try outputURL(from: outputPath),
                 screenCaptureTimeout: screenCaptureTimeout,
-                rawOutput: wantsRawOutput
+                rawOutput: wantsRawOutput,
+                textOutput: captureTextOutput
             )
         )
     }
@@ -2606,7 +2694,8 @@ func parse(arguments: [String]) throws -> CommandBehavior {
             windowSelection: windowSelection,
             windowCrop: windowCrop,
             screenCaptureTimeout: screenCaptureTimeout,
-            rawOutput: wantsRawOutput
+            rawOutput: wantsRawOutput,
+            textOutput: captureTextOutput
         )
     )
 }
@@ -2659,7 +2748,7 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         let argument = arguments[index]
 
         switch argument {
-        case "--help", "-h", "--version", "--doctor", "--list-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--interactive", "--flat", "--list-menu-bar-items", "--get", "--get-element", "--wait-for-element", "--press", "--press-element", "--raise-window", "--raise", "--close-window", "--minimize-window", "--right", "--double", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only", "--raw":
+        case "--help", "-h", "--version", "--doctor", "--list-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--interactive", "--flat", "--list-menu-bar-items", "--get", "--get-element", "--wait-for-element", "--press", "--press-element", "--raise-window", "--raise", "--close-window", "--minimize-window", "--right", "--double", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only", "--raw", "--with-ascii", "--with-ocr":
             flags.insert(argument)
             index += 1
         case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--wait-for-window", "--press-at", "--path", "--role", "--subrole", "--title", "--identifier", "--description", "--set-value", "--type", "--key", "--click", "--drag", "--scroll", "--move-window", "--resize-window", "--depth", "--max-children", "--roles", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
@@ -4006,6 +4095,36 @@ private func asciiArtReport(using command: AsciiArtCommand) async throws -> Stri
     )
 }
 
+private func captureOutputEnvelopeJSON(
+    mode: String,
+    outputURL: URL,
+    textOutput: CaptureTextOptions?
+) async throws -> String {
+    guard let textOutput else {
+        return try outputEnvelopeJSON(mode: mode, output: outputURL.path)
+    }
+
+    let command = AsciiArtCommand(
+        imageURL: outputURL,
+        style: textOutput.style,
+        outputMode: textOutput.outputMode,
+        width: textOutput.width,
+        maxHeight: textOutput.maxHeight,
+        invert: textOutput.invert,
+        includeOCR: textOutput.includeOCR,
+        recognitionLanguages: textOutput.recognitionLanguages,
+        rawOutput: false
+    )
+    let text = try await asciiArtReport(using: command)
+
+    switch textOutput.outputMode {
+    case .report:
+        return try outputReportEnvelopeJSON(mode: mode, output: outputURL.path, report: text)
+    case .ocrOnly:
+        return try outputDataEnvelopeJSON(mode: mode, output: outputURL.path, dataJSON: text)
+    }
+}
+
 private func loadImage(at imageURL: URL) throws -> CGImage {
     guard FileManager.default.fileExists(atPath: imageURL.path) else {
         throw RegionShotError.captureFailed("Image file not found: \(imageURL.path)")
@@ -4470,7 +4589,9 @@ private func recognizeTextBlocks(in image: CGImage, recognitionLanguages: [Strin
     var request = RecognizeTextRequest()
     configureTextRecognitionRequest(&request, recognitionLanguages: recognitionLanguages)
 
-    let observations = try await request.perform(on: ocrImage)
+    let observations = try await withSuppressedStandardOutput {
+        try await request.perform(on: ocrImage)
+    }
 
     let blocks = observations.compactMap { observation -> OCRTextBlock? in
         guard let candidate = observation.topCandidates(1).first else {
@@ -4494,6 +4615,38 @@ private func recognizeTextBlocks(in image: CGImage, recognitionLanguages: [Strin
     }
 
     return sortedOCRTextBlocks(blocks)
+}
+
+private func withSuppressedStandardOutput<T>(_ operation: () async throws -> T) async throws -> T {
+    // Vision may emit model diagnostics directly to stdout; keep RegionShot's JSON channel clean.
+    fflush(stdout)
+
+    let originalStandardOutput = dup(STDOUT_FILENO)
+    guard originalStandardOutput >= 0 else {
+        return try await operation()
+    }
+
+    let devNull = open("/dev/null", O_WRONLY)
+    guard devNull >= 0 else {
+        close(originalStandardOutput)
+        return try await operation()
+    }
+
+    dup2(devNull, STDOUT_FILENO)
+    close(devNull)
+
+    do {
+        let result = try await operation()
+        fflush(stdout)
+        dup2(originalStandardOutput, STDOUT_FILENO)
+        close(originalStandardOutput)
+        return result
+    } catch {
+        fflush(stdout)
+        dup2(originalStandardOutput, STDOUT_FILENO)
+        close(originalStandardOutput)
+        throw error
+    }
 }
 
 func configureTextRecognitionRequest(_ request: inout RecognizeTextRequest, recognitionLanguages: [String]) {
@@ -4716,6 +4869,7 @@ func encodeJSON<T: Encodable>(_ value: T) throws -> String {
 
 private func encodeJSONString(_ value: String) throws -> String {
     let encoder = JSONEncoder()
+    encoder.outputFormatting = [.withoutEscapingSlashes]
     let data = try encoder.encode(value)
 
     guard let json = String(data: data, encoding: .utf8) else {
@@ -4752,11 +4906,30 @@ func outputEnvelopeJSON(mode: String, output: String, version: String = currentR
     )
 }
 
+func outputDataEnvelopeJSON(mode: String, output: String, dataJSON: String, version: String = currentRegionShotVersion()) throws -> String {
+    let modeJSON = try encodeJSONString(mode)
+    let outputJSON = try encodeJSONString(output)
+    let versionJSON = try encodeJSONString(version)
+    return #"{"data":\#(dataJSON),"mode":\#(modeJSON),"ok":true,"output":\#(outputJSON),"version":\#(versionJSON)}"#
+}
+
 func reportEnvelopeJSON(mode: String, report: String, version: String = currentRegionShotVersion()) throws -> String {
     try encodeJSON(
         ReportEnvelope(
             mode: mode,
             ok: true,
+            report: report,
+            version: version
+        )
+    )
+}
+
+func outputReportEnvelopeJSON(mode: String, output: String, report: String, version: String = currentRegionShotVersion()) throws -> String {
+    try encodeJSON(
+        OutputReportEnvelope(
+            mode: mode,
+            ok: true,
+            output: output,
             report: report,
             version: version
         )
