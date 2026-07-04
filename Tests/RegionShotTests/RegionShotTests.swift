@@ -116,6 +116,55 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
+    func testLaunchApplicationParsingBundleIdentifier() throws {
+        let behavior = try parse(arguments: ["launch", "com.apple.TextEdit"])
+
+        guard case .launchApplication(let command) = behavior else {
+            return XCTFail("Expected launch application behavior.")
+        }
+
+        XCTAssertEqual(command.target, .bundleIdentifier("com.apple.TextEdit"))
+        XCTAssertEqual(command.arguments, [])
+        XCTAssertFalse(command.waitForWindow)
+        XCTAssertEqual(command.timeout, 5.0, accuracy: 0.001)
+    }
+
+    func testLaunchApplicationParsingPathWaitAndArguments() throws {
+        let behavior = try parse(arguments: [
+            "launch",
+            ".build/debug/MyDebugApp",
+            "--wait-window",
+            "--timeout", "2.5",
+            "--args", "--fixture", "smoke", "--flag",
+        ])
+
+        guard case .launchApplication(let command) = behavior else {
+            return XCTFail("Expected launch application behavior.")
+        }
+
+        XCTAssertEqual(command.target, .path(".build/debug/MyDebugApp"))
+        XCTAssertEqual(command.arguments, ["--fixture", "smoke", "--flag"])
+        XCTAssertTrue(command.waitForWindow)
+        XCTAssertEqual(command.timeout, 2.5, accuracy: 0.001)
+    }
+
+    func testLaunchApplicationRejectsMissingTarget() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["launch", "--wait-window"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("launch"))
+            XCTAssertTrue(String(describing: error).contains("PATH"))
+        }
+    }
+
+    func testLaunchApplicationRejectsUnexpectedFlagBeforeArgs() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["launch", "com.apple.TextEdit", "--bad"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("launch"))
+        }
+    }
+
     func testQuitApplicationParsing() throws {
         let behavior = try parse(arguments: ["quit", "--app", "Terminal"])
 
@@ -1118,6 +1167,7 @@ final class RegionShotTests: XCTestCase {
             (.unsupportedFeature("not available"), 69),
             (.capturePermissionDenied, 69),
             (.accessibilityPermissionDenied, 69),
+            (.launchFailed("launch failed"), 70),
             (.captureFailed("capture failed"), 70),
             (.accessibilityQueryFailed("query failed"), 70),
             (.encodeFailed("encoding failed"), 70),

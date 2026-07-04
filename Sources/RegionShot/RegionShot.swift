@@ -2,6 +2,7 @@ import Darwin
 import AppKit
 import ApplicationServices
 import CoreGraphics
+import Dispatch
 import Foundation
 import ImageIO
 @preconcurrency import ScreenCaptureKit
@@ -33,6 +34,9 @@ struct RegionShot {
                 print(json)
             case .activateApplication(let command):
                 let json = try activate(using: command)
+                print(json)
+            case .launchApplication(let command):
+                let json = try launch(using: command)
                 print(json)
             case .quitApplication(let command):
                 let json = try quit(using: command)
@@ -80,6 +84,7 @@ enum CommandBehavior: Sendable {
     case clipboard(ClipboardCommand)
     case listDisplays
     case activateApplication(ActivateApplicationCommand)
+    case launchApplication(LaunchApplicationCommand)
     case quitApplication(QuitApplicationCommand)
     case findApps(FindAppsCommand)
     case asciiArt(AsciiArtCommand)
@@ -94,7 +99,7 @@ enum CommandBehavior: Sendable {
         switch self {
         case .showHelp, .showVersion, .doctor, .clipboard, .listDisplays:
             return false
-        case .activateApplication, .quitApplication, .findApps, .asciiArt, .capture, .captureVisibleWindow, .listWindows, .listVisibleWindows, .inspectAccessibility, .menuBar:
+        case .activateApplication, .launchApplication, .quitApplication, .findApps, .asciiArt, .capture, .captureVisibleWindow, .listWindows, .listVisibleWindows, .inspectAccessibility, .menuBar:
             return true
         }
     }
@@ -102,6 +107,13 @@ enum CommandBehavior: Sendable {
 
 struct ActivateApplicationCommand: Sendable {
     let applicationSelector: ApplicationSelector
+}
+
+struct LaunchApplicationCommand: Sendable {
+    let target: LaunchTarget
+    let arguments: [String]
+    let waitForWindow: Bool
+    let timeout: TimeInterval
 }
 
 struct QuitApplicationCommand: Sendable {
@@ -306,6 +318,20 @@ enum ApplicationSelector: Sendable {
     }
 }
 
+enum LaunchTarget: Equatable, Sendable {
+    case path(String)
+    case bundleIdentifier(String)
+
+    var rawValue: String {
+        switch self {
+        case .path(let path):
+            return path
+        case .bundleIdentifier(let bundleIdentifier):
+            return bundleIdentifier
+        }
+    }
+}
+
 enum WindowSelection: Sendable {
     case frontmost
     case index(Int)
@@ -400,6 +426,16 @@ private struct WaitedAccessibilityWindow {
     let window: AccessibilityCatalogWindow
 }
 
+private struct LaunchedApplication {
+    let application: AutomationApplication
+    let method: String
+}
+
+private final class OpenApplicationResult: @unchecked Sendable {
+    var application: NSRunningApplication?
+    var error: Error?
+}
+
 struct MenuBarItemCatalog {
     let application: AutomationApplication
     let items: [MenuBarCatalogItem]
@@ -484,6 +520,15 @@ struct DisplayEntry: Encodable {
 private struct ActivateApplicationResponse: Encodable {
     let application: WindowListApplication
     let activationRequestAccepted: Bool
+}
+
+private struct LaunchApplicationResponse: Encodable {
+    let target: String
+    let method: String
+    let arguments: [String]
+    let application: WindowListApplication
+    let waitForWindow: Bool
+    let window: AccessibilityWindowEntry?
 }
 
 private struct QuitApplicationResponse: Encodable {
@@ -821,6 +866,7 @@ enum RegionShotError: LocalizedError, Sendable {
     case ambiguousApplication(String)
     case windowNotFound(String)
     case ambiguousWindow(String)
+    case launchFailed(String)
     case captureFailed(String)
     case operationTimedOut(String)
     case accessibilityQueryFailed(String)
@@ -848,6 +894,8 @@ enum RegionShotError: LocalizedError, Sendable {
             return message
         case .ambiguousWindow(let message):
             return message
+        case .launchFailed(let message):
+            return message
         case .captureFailed(let message):
             return message
         case .operationTimedOut(let message):
@@ -869,7 +917,7 @@ enum RegionShotError: LocalizedError, Sendable {
             return 66
         case .unsupportedFeature, .capturePermissionDenied, .accessibilityPermissionDenied:
             return 69
-        case .captureFailed, .accessibilityQueryFailed, .encodeFailed:
+        case .launchFailed, .captureFailed, .accessibilityQueryFailed, .encodeFailed:
             return 70
         case .operationTimedOut:
             return 75
@@ -904,6 +952,7 @@ Forms:
   regionshot doctor
   regionshot clipboard [--set TEXT]
   regionshot activate --app APP
+  regionshot launch PATH|BUNDLE_ID [--wait-window] [--timeout SECONDS] [--args ARG ...]
   regionshot quit --app APP [--force]
   regionshot --find-app TEXT
   regionshot --list-displays
@@ -967,6 +1016,7 @@ Rules:
   `doctor` prints non-prompting permission, version, and host-process JSON
   `clipboard` reads or sets plain text on the general pasteboard and prints JSON
   `activate --app APP` asks macOS to activate a running app and prints JSON
+  `launch PATH|BUNDLE_ID` starts an app bundle, bundle id, or executable path; `--wait-window` waits for its first accessibility window
   `quit --app APP` asks a running app to terminate; add `--force` to force-terminate
   `--list-displays` prints active display ids, point frames, pixel sizes, scale, and main-display status as JSON
   `--app` accepts app name, bundle id, or pid; pure integers are treated as pids for compatibility
@@ -1196,6 +1246,33 @@ func activate(using command: ActivateApplicationCommand) throws -> String {
     )
 }
 
+func launch(using command: LaunchApplicationCommand) throws -> String {
+    let launched = try launchApplication(target: command.target, arguments: command.arguments)
+    let waitedWindow: AccessibilityWindowEntry?
+
+    if command.waitForWindow {
+        try ensureAccessibilityAccess(prompt: true)
+        let waited = try waitForAnyAccessibilityWindow(
+            selector: .processID(launched.application.processID),
+            timeout: command.timeout
+        )
+        waitedWindow = accessibilityWindowEntry(for: waited.window)
+    } else {
+        waitedWindow = nil
+    }
+
+    return try encodeJSON(
+        LaunchApplicationResponse(
+            target: command.target.rawValue,
+            method: launched.method,
+            arguments: command.arguments,
+            application: windowListApplication(for: launched.application),
+            waitForWindow: command.waitForWindow,
+            window: waitedWindow
+        )
+    )
+}
+
 func quit(using command: QuitApplicationCommand) throws -> String {
     let application = try resolveAutomationApplication(selector: command.applicationSelector)
     let runningApplication = NSRunningApplication(processIdentifier: application.processID)
@@ -1210,6 +1287,87 @@ func quit(using command: QuitApplicationCommand) throws -> String {
             terminationRequestAccepted: accepted
         )
     )
+}
+
+private func launchApplication(target: LaunchTarget, arguments: [String]) throws -> LaunchedApplication {
+    switch target {
+    case .bundleIdentifier(let bundleIdentifier):
+        guard let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) else {
+            throw RegionShotError.applicationNotFound("No application bundle matches bundle id `\(bundleIdentifier)`.")
+        }
+
+        let application = try openApplication(at: applicationURL, arguments: arguments)
+        return LaunchedApplication(application: automationApplication(from: application), method: "bundleIdentifier")
+
+    case .path(let path):
+        let url = fileURL(from: path)
+        var isDirectory = ObjCBool(false)
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            throw RegionShotError.applicationNotFound("No application or executable exists at `\(url.path)`.")
+        }
+
+        if isDirectory.boolValue {
+            guard url.pathExtension.lowercased() == "app" else {
+                throw RegionShotError.launchFailed("Launch path `\(url.path)` is a directory, not an app bundle or executable.")
+            }
+
+            let application = try openApplication(at: url, arguments: arguments)
+            return LaunchedApplication(application: automationApplication(from: application), method: "applicationBundle")
+        }
+
+        guard FileManager.default.isExecutableFile(atPath: url.path) else {
+            throw RegionShotError.launchFailed("Launch path `\(url.path)` is not executable.")
+        }
+
+        let process = Process()
+        process.executableURL = url
+        process.arguments = arguments
+        if let nullDevice = FileHandle(forWritingAtPath: "/dev/null") {
+            process.standardOutput = nullDevice
+            process.standardError = nullDevice
+        }
+
+        do {
+            try process.run()
+        } catch {
+            throw RegionShotError.launchFailed("Failed to launch executable `\(url.path)`: \(error.localizedDescription)")
+        }
+
+        let processID = process.processIdentifier
+        let application = NSRunningApplication(processIdentifier: processID)
+            .map(automationApplication(from:)) ??
+            AutomationApplication(name: url.lastPathComponent, bundleIdentifier: "", processID: processID)
+
+        return LaunchedApplication(application: application, method: "executable")
+    }
+}
+
+private func openApplication(at applicationURL: URL, arguments: [String]) throws -> NSRunningApplication {
+    let configuration = NSWorkspace.OpenConfiguration()
+    configuration.arguments = arguments
+
+    let result = OpenApplicationResult()
+    let semaphore = DispatchSemaphore(value: 0)
+
+    NSWorkspace.shared.openApplication(at: applicationURL, configuration: configuration) { application, error in
+        result.application = application
+        result.error = error
+        semaphore.signal()
+    }
+
+    guard semaphore.wait(timeout: .now() + 10) == .success else {
+        throw RegionShotError.operationTimedOut("macOS did not return launch status for `\(applicationURL.path)` within 10 seconds.")
+    }
+
+    if let error = result.error {
+        throw RegionShotError.launchFailed("Failed to launch `\(applicationURL.path)`: \(error.localizedDescription)")
+    }
+
+    guard let application = result.application else {
+        throw RegionShotError.launchFailed("macOS did not return a running application for `\(applicationURL.path)`.")
+    }
+
+    return application
 }
 
 func currentDisplayEntries() -> [DisplayEntry] {
@@ -1572,6 +1730,10 @@ func parse(arguments: [String]) throws -> CommandBehavior {
 
     if arguments.first == "activate" {
         return .activateApplication(try parseActivateApplicationCommand(arguments: Array(arguments.dropFirst())))
+    }
+
+    if arguments.first == "launch" {
+        return .launchApplication(try parseLaunchApplicationCommand(arguments: Array(arguments.dropFirst())))
     }
 
     if arguments.first == "quit" {
@@ -2174,6 +2336,74 @@ func parseActivateApplicationCommand(arguments: [String]) throws -> ActivateAppl
     }
 
     return ActivateApplicationCommand(applicationSelector: applicationSelector)
+}
+
+func parseLaunchApplicationCommand(arguments: [String]) throws -> LaunchApplicationCommand {
+    var target: String?
+    var launchArguments: [String] = []
+    var waitForWindow = false
+    var timeout = defaultScreenCaptureKitTimeout
+    var index = 0
+
+    while index < arguments.count {
+        let argument = arguments[index]
+
+        switch argument {
+        case "--args":
+            guard target != nil else {
+                throw RegionShotError.invalidArguments("`launch` requires PATH|BUNDLE_ID before `--args`.")
+            }
+            launchArguments = Array(arguments.dropFirst(index + 1))
+            index = arguments.count
+        case "--wait-window":
+            waitForWindow = true
+            index += 1
+        case "--timeout":
+            let valueIndex = index + 1
+            guard valueIndex < arguments.count else {
+                throw RegionShotError.invalidArguments("Missing value for --timeout.")
+            }
+            timeout = try parseTimeout(arguments[valueIndex])
+            index += 2
+        default:
+            if argument.hasPrefix("--") {
+                throw RegionShotError.invalidArguments("`launch` accepts PATH|BUNDLE_ID, optional `--wait-window`, optional `--timeout SECONDS`, and optional `--args ARG ...`.")
+            }
+
+            guard target == nil else {
+                throw RegionShotError.invalidArguments("`launch` accepts exactly one PATH|BUNDLE_ID target before `--args`.")
+            }
+
+            target = argument
+            index += 1
+        }
+    }
+
+    guard let rawTarget = target, let normalizedTarget = normalizedArgumentValue(rawTarget) else {
+        throw RegionShotError.invalidArguments("`launch` requires PATH|BUNDLE_ID.")
+    }
+
+    return LaunchApplicationCommand(
+        target: inferLaunchTarget(normalizedTarget),
+        arguments: launchArguments,
+        waitForWindow: waitForWindow,
+        timeout: timeout
+    )
+}
+
+private func inferLaunchTarget(_ rawValue: String) -> LaunchTarget {
+    if looksLikeLaunchPath(rawValue) {
+        return .path(rawValue)
+    }
+
+    return .bundleIdentifier(rawValue)
+}
+
+private func looksLikeLaunchPath(_ value: String) -> Bool {
+    value.hasPrefix("/") ||
+        value.hasPrefix(".") ||
+        value.contains("/") ||
+        FileManager.default.fileExists(atPath: fileURL(from: value).path)
 }
 
 func parseQuitApplicationCommand(arguments: [String]) throws -> QuitApplicationCommand {
@@ -4379,6 +4609,28 @@ private func waitForAccessibilityWindow(
     throw RegionShotError.operationTimedOut("No accessibility window named `\(title)` appeared for `\(selector.label)` within \(formatSeconds(timeout)).")
 }
 
+private func waitForAnyAccessibilityWindow(
+    selector: ApplicationSelector,
+    timeout: TimeInterval,
+    pollInterval: TimeInterval = 0.1
+) throws -> WaitedAccessibilityWindow {
+    let deadline = Date().addingTimeInterval(timeout)
+
+    repeat {
+        do {
+            let catalog = try buildAccessibilityWindowCatalog(selector: selector)
+            let window = try selectAccessibilityWindow(from: catalog, using: nil)
+            return WaitedAccessibilityWindow(catalog: catalog, window: window)
+        } catch RegionShotError.applicationNotFound {
+            Thread.sleep(forTimeInterval: pollInterval)
+        } catch RegionShotError.windowNotFound {
+            Thread.sleep(forTimeInterval: pollInterval)
+        }
+    } while Date() < deadline
+
+    throw RegionShotError.operationTimedOut("No accessibility window appeared for `\(selector.label)` within \(formatSeconds(timeout)).")
+}
+
 private func isFrontmostAccessibilityWindow(
     window: AccessibilityCatalogWindow,
     index: Int,
@@ -4406,10 +4658,20 @@ private func resolveAutomationApplication(selector: ApplicationSelector) throws 
 
     switch selector {
     case .processID(let processID):
-        guard let application = runningApplications.first(where: { $0.processIdentifier == processID }) else {
-            throw RegionShotError.applicationNotFound("No running application matches pid \(processID).")
+        if let application = runningApplications.first(where: { $0.processIdentifier == processID }) {
+            return automationApplication(from: application)
         }
-        return automationApplication(from: application)
+
+        if let application = NSRunningApplication(processIdentifier: processID) {
+            return automationApplication(from: application)
+        }
+
+        let probeResult = Darwin.kill(processID, 0)
+        if probeResult == 0 || errno == EPERM {
+            return AutomationApplication(name: "pid \(processID)", bundleIdentifier: "", processID: processID)
+        }
+
+        throw RegionShotError.applicationNotFound("No running application matches pid \(processID).")
     case .name(let query):
         guard normalizedSelectorText(query) != nil else {
             throw RegionShotError.invalidArguments("App selectors require a non-empty name, bundle id, or process id.")

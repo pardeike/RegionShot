@@ -28,11 +28,13 @@ regionshot clipboard --set "copied text"
 
 `clipboard` reads or sets plain text on the general pasteboard and prints JSON.
 
-## Activate App
+## App Lifecycle
 
 ```bash
 regionshot activate --app "System Settings"
 regionshot activate --pid 12345
+regionshot launch com.apple.TextEdit --wait-window --timeout 10
+regionshot launch .build/debug/MyDebugApp --wait-window --args --fixture smoke
 regionshot quit --app "My Debug App"
 regionshot quit --pid 12345 --force
 ```
@@ -40,6 +42,10 @@ regionshot quit --pid 12345 --force
 `activate` resolves a running app by name, bundle id, or process id, asks macOS
 to activate it, and prints JSON describing the app and whether macOS accepted the
 activation request.
+
+`launch` starts an app bundle path, bundle id, or executable path. Add
+`--wait-window` to wait until the launched process exposes its first accessibility
+window. Arguments after `--args` are passed to the launched app unchanged.
 
 `quit` resolves a running app and asks it to terminate. Add `--force` to call
 force-terminate instead. The command prints JSON describing the app and whether
