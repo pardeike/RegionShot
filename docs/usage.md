@@ -169,6 +169,8 @@ regionshot --app "System Settings" --wait-for-window "Network" --timeout 10
 regionshot --app "System Settings" --get --role AXTextField --title Name
 regionshot --app "System Settings" --wait-for-element --role AXButton --title Done --timeout 10
 regionshot --app "System Settings" --set-value "Andreas" --role AXTextField --title Name
+regionshot --app "System Settings" --type "typed text"
+regionshot --app "System Settings" --key "cmd+s"
 regionshot --app "System Settings" --press --role AXButton --title Done
 regionshot --app "System Settings" --press-at 14,14
 regionshot --app "System Settings" --element-at 14,14
@@ -198,6 +200,10 @@ available, then returns it using the same JSON shape as `--get`. Use
 `--set-value TEXT` finds one accessibility element using selector fields, writes
 the element's `AXValue`, and returns the updated element. Empty text is valid and
 can be used to clear text fields that support `AXValue` writes.
+
+`--type TEXT` activates the app and posts Unicode keyboard input to its process.
+`--key CHORD` posts a shortcut or named key such as `cmd+s`, `cmd+shift+s`,
+`escape`, or `return`.
 
 `--press` finds a pressable accessibility element using selector fields such as
 `--role`, `--subrole`, `--title`, `--identifier`, and `--description`, then

@@ -750,6 +750,68 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
+    func testAccessibilityTypeTextParsing() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--type", "hello",
+        ])
+
+        guard case .inspectAccessibility(let command) = behavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .typeText(let text) = command.mode else {
+            return XCTFail("Expected type text mode.")
+        }
+
+        XCTAssertEqual(text, "hello")
+    }
+
+    func testAccessibilityKeyChordParsing() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--key", "cmd+shift+s",
+        ])
+
+        guard case .inspectAccessibility(let command) = behavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .keyChord(let chord) = command.mode else {
+            return XCTFail("Expected key chord mode.")
+        }
+
+        XCTAssertEqual(chord.rawValue, "cmd+shift+s")
+        XCTAssertEqual(chord.keyName, "s")
+        XCTAssertEqual(chord.keyCode, 1)
+        XCTAssertEqual(chord.modifiers, [.command, .shift])
+    }
+
+    func testAccessibilityKeyChordRejectsUnsupportedKey() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--key", "cmd+notakey"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--key"))
+            XCTAssertTrue(String(describing: error).contains("notakey"))
+        }
+    }
+
+    func testAccessibilityKeyboardInputRejectsMixedModesAndWindowSelection() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--type", "hello", "--key", "return"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--type"))
+            XCTAssertTrue(String(describing: error).contains("--key"))
+        }
+
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--window-name", "server logs", "--type", "hello"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--type"))
+            XCTAssertTrue(String(describing: error).contains("--window-name"))
+        }
+    }
+
     func testAccessibilityGetElementRequiresSelector() {
         XCTAssertThrowsError(
             try parse(arguments: ["--app", "Terminal", "--get"])

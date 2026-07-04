@@ -254,6 +254,48 @@ struct WindowSize: Sendable {
     }
 }
 
+enum KeyModifier: String, Sendable {
+    case command
+    case shift
+    case option
+    case control
+    case function
+
+    var eventFlag: CGEventFlags {
+        switch self {
+        case .command:
+            return .maskCommand
+        case .shift:
+            return .maskShift
+        case .option:
+            return .maskAlternate
+        case .control:
+            return .maskControl
+        case .function:
+            return .maskSecondaryFn
+        }
+    }
+}
+
+struct KeyChord: Sendable {
+    let rawValue: String
+    let keyName: String
+    let keyCode: CGKeyCode
+    let modifiers: [KeyModifier]
+
+    var modifierNames: [String] {
+        modifiers.map(\.rawValue)
+    }
+
+    var eventFlags: CGEventFlags {
+        var flags = CGEventFlags()
+        for modifier in modifiers {
+            flags.insert(modifier.eventFlag)
+        }
+        return flags
+    }
+}
+
 struct AsciiArtOptions: Sendable {
     let width: Int
     let maxHeight: Int
@@ -346,6 +388,8 @@ enum AccessibilityMode: Sendable {
     case getElement(AccessibilitySelector)
     case waitForElement(AccessibilitySelector)
     case setValue(AccessibilitySelector, String)
+    case typeText(String)
+    case keyChord(KeyChord)
     case pressAt(WindowPoint)
     case pressElement(AccessibilitySelector)
     case raiseWindow
@@ -693,6 +737,16 @@ private struct AccessibilitySetValueResponse: Encodable {
     let ancestors: [AccessibilityElementResponse]
 }
 
+private struct KeyboardInputResponse: Encodable {
+    let application: WindowListApplication
+    let mode: String
+    let text: String?
+    let chord: String?
+    let key: String?
+    let modifiers: [String]?
+    let activationRequestAccepted: Bool
+}
+
 private struct AccessibilityPressResponse: Encodable {
     let application: WindowListApplication
     let window: AccessibilityWindowEntry
@@ -986,6 +1040,8 @@ Forms:
   regionshot --app APP --get --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
   regionshot --app APP --wait-for-element --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT] [--timeout SECONDS]
   regionshot --app APP --set-value TEXT --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
+  regionshot --app APP --type TEXT
+  regionshot --app APP --key CHORD
   regionshot --app APP --press --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
   regionshot --app APP --press-at X,Y
   regionshot --app APP --element-at X,Y
@@ -1052,6 +1108,7 @@ Rules:
   `--get` (alias: `--get-element`) returns one matching accessibility element without performing an action
   `--wait-for-element` polls until one matching accessibility element appears, using `--timeout SECONDS`
   `--set-value TEXT` writes AXValue on one matching accessibility element and returns the updated element
+  `--type TEXT` posts Unicode keyboard input to the app; `--key CHORD` posts shortcuts like `cmd+s`
   `--title`, `--identifier`, and `--description` prefer exact matches, then fall back to case-insensitive contains
   `--list-elements` accepts `--depth` 0...12 and `--max-children` 1...200
   capture and ScreenCaptureKit window listing require Screen Recording permission
@@ -1799,6 +1856,10 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     let wantsAccessibilityWaitForElement = parsed.flags.contains("--wait-for-element")
     let setValueText = parsed.values["--set-value"]
     let wantsAccessibilitySetValue = setValueText != nil
+    let typeText = parsed.values["--type"]
+    let wantsAccessibilityTypeText = typeText != nil
+    let keyChord = try parseKeyChord(parsed.values["--key"])
+    let wantsAccessibilityKeyChord = parsed.values["--key"] != nil
     let wantsPress = parsed.flags.contains("--press") || parsed.flags.contains("--press-element")
     let wantsMenuBarPress = wantsPress && menuBarSelection != nil
     let wantsAccessibilityPress = wantsPress && !wantsMenuBarPress
@@ -1841,6 +1902,10 @@ func parse(arguments: [String]) throws -> CommandBehavior {
 
     if wantsAccessibilityWaitForWindow, waitForWindowTitle == nil {
         throw RegionShotError.invalidArguments("`--wait-for-window` requires a non-empty window title.")
+    }
+
+    if wantsAccessibilityTypeText, normalizedArgumentValue(typeText) == nil {
+        throw RegionShotError.invalidArguments("`--type` requires non-empty text.")
     }
 
     if let asciiImagePath {
@@ -1904,6 +1969,8 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     if wantsAccessibilityGet { accessibilityModeCount += 1 }
     if wantsAccessibilityWaitForElement { accessibilityModeCount += 1 }
     if wantsAccessibilitySetValue { accessibilityModeCount += 1 }
+    if wantsAccessibilityTypeText { accessibilityModeCount += 1 }
+    if wantsAccessibilityKeyChord { accessibilityModeCount += 1 }
     if wantsAccessibilityPress { accessibilityModeCount += 1 }
     if pressPoint != nil { accessibilityModeCount += 1 }
     if wantsRaiseWindow { accessibilityModeCount += 1 }
@@ -1913,7 +1980,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     if windowSize != nil { accessibilityModeCount += 1 }
 
     if accessibilityModeCount > 1 {
-        throw RegionShotError.invalidArguments("Choose only one of `--list-accessibility-windows`, `--list-elements`, `--element-at`, `--wait-for-window`, `--get`/`--get-element`, `--wait-for-element`, `--set-value`, `--press`/`--press-element`, `--press-at`, `--raise-window`, `--close-window`, `--minimize-window`, `--move-window`, or `--resize-window`.")
+        throw RegionShotError.invalidArguments("Choose only one of `--list-accessibility-windows`, `--list-elements`, `--element-at`, `--wait-for-window`, `--get`/`--get-element`, `--wait-for-element`, `--set-value`, `--type`, `--key`, `--press`/`--press-element`, `--press-at`, `--raise-window`, `--close-window`, `--minimize-window`, `--move-window`, or `--resize-window`.")
     }
 
     let menuBarModeCount = [
@@ -1951,6 +2018,10 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         accessibilityMode = .waitForElement(selector)
     } else if let setValueText {
         accessibilityMode = .setValue(selector, setValueText)
+    } else if let typeText {
+        accessibilityMode = .typeText(typeText)
+    } else if let keyChord {
+        accessibilityMode = .keyChord(keyChord)
     } else if wantsAccessibilityPress {
         accessibilityMode = .pressElement(selector)
     } else if let pressPoint {
@@ -2016,6 +2087,10 @@ func parse(arguments: [String]) throws -> CommandBehavior {
 
     if wantsAccessibilityWaitForWindow, windowSelection != nil {
         throw RegionShotError.invalidArguments("`--wait-for-window` cannot be combined with `--frontmost-window`, `--window-index`, or `--window-name`; pass the expected title as the `--wait-for-window` value.")
+    }
+
+    if (wantsAccessibilityTypeText || wantsAccessibilityKeyChord), windowSelection != nil {
+        throw RegionShotError.invalidArguments("`--type` and `--key` cannot be combined with `--frontmost-window`, `--window-index`, or `--window-name`; keyboard input is posted to the selected app.")
     }
 
     if (parsed.values["--depth"] != nil || parsed.values["--max-children"] != nil), !wantsElementList {
@@ -2294,7 +2369,7 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         case "--help", "-h", "--version", "--doctor", "--list-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--get", "--get-element", "--wait-for-element", "--press", "--press-element", "--raise-window", "--raise", "--close-window", "--minimize-window", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only":
             flags.insert(argument)
             index += 1
-        case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--wait-for-window", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--set-value", "--move-window", "--resize-window", "--depth", "--max-children", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
+        case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--wait-for-window", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--set-value", "--type", "--key", "--move-window", "--resize-window", "--depth", "--max-children", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
             let valueIndex = index + 1
             guard valueIndex < arguments.count else {
                 throw RegionShotError.invalidArguments("Missing value for \(argument).")
@@ -2653,6 +2728,101 @@ private func parseWindowSize(_ rawValue: String?, flag: String) throws -> Window
     return size
 }
 
+private func parseKeyChord(_ rawValue: String?) throws -> KeyChord? {
+    guard let rawValue else {
+        return nil
+    }
+
+    let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+        throw RegionShotError.invalidArguments("`--key` requires a non-empty key chord.")
+    }
+
+    let parts = trimmed
+        .split(separator: "+", omittingEmptySubsequences: false)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    guard !parts.contains(where: \.isEmpty) else {
+        throw RegionShotError.invalidArguments("`--key` chord contains an empty component.")
+    }
+
+    var modifiers: [KeyModifier] = []
+    var keyNames: [String] = []
+
+    for part in parts {
+        if let modifier = keyModifier(named: part) {
+            if !modifiers.contains(modifier) {
+                modifiers.append(modifier)
+            }
+        } else {
+            keyNames.append(part)
+        }
+    }
+
+    guard keyNames.count == 1, let keyName = keyNames.first else {
+        throw RegionShotError.invalidArguments("`--key` requires exactly one non-modifier key, for example `cmd+s` or `escape`.")
+    }
+
+    let normalizedKey = normalizedKeyChordComponent(keyName)
+    guard let keyCode = keyCodeByName[normalizedKey] else {
+        throw RegionShotError.invalidArguments("Unsupported `--key` key `\(keyName)`.")
+    }
+
+    return KeyChord(
+        rawValue: trimmed,
+        keyName: normalizedKey,
+        keyCode: keyCode,
+        modifiers: modifiers
+    )
+}
+
+private func keyModifier(named name: String) -> KeyModifier? {
+    switch normalizedKeyChordComponent(name) {
+    case "cmd", "command", "meta":
+        return .command
+    case "shift":
+        return .shift
+    case "option", "opt", "alt":
+        return .option
+    case "control", "ctrl":
+        return .control
+    case "function", "fn":
+        return .function
+    default:
+        return nil
+    }
+}
+
+private func normalizedKeyChordComponent(_ value: String) -> String {
+    value
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+        .replacingOccurrences(of: "-", with: "")
+        .replacingOccurrences(of: "_", with: "")
+        .replacingOccurrences(of: " ", with: "")
+}
+
+private let keyCodeByName: [String: CGKeyCode] = [
+    "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7,
+    "c": 8, "v": 9, "b": 11, "q": 12, "w": 13, "e": 14, "r": 15,
+    "y": 16, "t": 17, "1": 18, "2": 19, "3": 20, "4": 21, "6": 22,
+    "5": 23, "equal": 24, "=": 24, "9": 25, "7": 26, "minus": 27,
+    "-": 27, "8": 28, "0": 29, "rightbracket": 30, "]": 30, "o": 31,
+    "u": 32, "leftbracket": 33, "[": 33, "i": 34, "p": 35, "return": 36,
+    "enter": 36, "l": 37, "j": 38, "quote": 39, "'": 39, "k": 40,
+    "semicolon": 41, ";": 41, "backslash": 42, "\\": 42, "comma": 43,
+    ",": 43, "slash": 44, "/": 44, "n": 45, "m": 46, "period": 47,
+    ".": 47, "tab": 48, "space": 49, "spacebar": 49, "grave": 50,
+    "`": 50, "delete": 51, "backspace": 51, "escape": 53, "esc": 53,
+    "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97,
+    "f7": 98, "f8": 100, "f9": 101, "f10": 109, "f11": 103, "f12": 111,
+    "home": 115, "pageup": 116, "forwarddelete": 117, "end": 119,
+    "pagedown": 121, "left": 123, "leftarrow": 123, "arrowleft": 123,
+    "right": 124, "rightarrow": 124, "arrowright": 124, "down": 125,
+    "downarrow": 125, "arrowdown": 125, "up": 126, "uparrow": 126,
+    "arrowup": 126,
+]
+
 private func parseAccessibilitySelector(from values: [String: String]) -> AccessibilitySelector {
     AccessibilitySelector(
         role: normalizedArgumentValue(values["--role"]),
@@ -2945,6 +3115,43 @@ private func listWindows(using command: ListWindowsCommand) async throws -> Stri
 private func inspectAccessibility(using command: AccessibilityCommand) async throws -> String {
     try ensureAccessibilityAccess(prompt: true)
 
+    switch command.mode {
+    case .typeText(let text):
+        let application = try resolveAutomationApplication(selector: command.applicationSelector)
+        let activationRequestAccepted = activateApplication(application)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        try postText(text, to: application.processID)
+        return try encodeJSON(
+            KeyboardInputResponse(
+                application: windowListApplication(for: application),
+                mode: "type",
+                text: text,
+                chord: nil,
+                key: nil,
+                modifiers: nil,
+                activationRequestAccepted: activationRequestAccepted
+            )
+        )
+    case .keyChord(let chord):
+        let application = try resolveAutomationApplication(selector: command.applicationSelector)
+        let activationRequestAccepted = activateApplication(application)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        try postKeyChord(chord, to: application.processID)
+        return try encodeJSON(
+            KeyboardInputResponse(
+                application: windowListApplication(for: application),
+                mode: "key",
+                text: nil,
+                chord: chord.rawValue,
+                key: chord.keyName,
+                modifiers: chord.modifierNames,
+                activationRequestAccepted: activationRequestAccepted
+            )
+        )
+    default:
+        break
+    }
+
     if case .waitForWindow(let title) = command.mode {
         let waited = try waitForAccessibilityWindow(
             selector: command.applicationSelector,
@@ -2966,8 +3173,8 @@ private func inspectAccessibility(using command: AccessibilityCommand) async thr
     let accessibilityWindow = selectedWindow.element
 
     switch command.mode {
-    case .waitForWindow:
-        throw RegionShotError.accessibilityQueryFailed("Internal error: `--wait-for-window` reached the selected-window execution path.")
+    case .waitForWindow, .typeText, .keyChord:
+        throw RegionShotError.accessibilityQueryFailed("Internal error: an app-level accessibility action reached the selected-window execution path.")
     case .listWindows:
         let response = AccessibilityWindowListResponse(
             application: windowListApplication(for: catalog.application),
@@ -5653,6 +5860,70 @@ private func waitForWindowToClose(
     } while Date() < deadline
 
     return false
+}
+
+private func postText(_ text: String, to processID: pid_t) throws {
+    guard let source = CGEventSource(stateID: .privateState) else {
+        throw RegionShotError.accessibilityQueryFailed("Failed to create a keyboard event source.")
+    }
+
+    for character in text {
+        var utf16 = Array(String(character).utf16)
+        try postUnicodeKeyEvent(utf16: &utf16, source: source, to: processID)
+        Thread.sleep(forTimeInterval: 0.005)
+    }
+}
+
+private func postUnicodeKeyEvent(
+    utf16: inout [UInt16],
+    source: CGEventSource,
+    to processID: pid_t
+) throws {
+    guard
+        let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+        let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
+    else {
+        throw RegionShotError.accessibilityQueryFailed("Failed to create Unicode keyboard events.")
+    }
+
+    utf16.withUnsafeBufferPointer { buffer in
+        keyDown.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
+        keyUp.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
+    }
+
+    keyDown.flags = []
+    keyUp.flags = []
+    keyDown.postToPid(processID)
+    keyUp.postToPid(processID)
+}
+
+private func postKeyChord(_ chord: KeyChord, to processID: pid_t) throws {
+    guard let source = CGEventSource(stateID: .privateState) else {
+        throw RegionShotError.accessibilityQueryFailed("Failed to create a keyboard event source.")
+    }
+
+    // Modifier shortcuts are interpreted by the frontmost app; the caller activates the target process before posting.
+    _ = processID
+    let activeFlags = chord.eventFlags
+    try postKeyCode(chord.keyCode, keyDown: true, flags: activeFlags, source: source)
+    try postKeyCode(chord.keyCode, keyDown: false, flags: activeFlags, source: source)
+}
+
+private func postKeyCode(
+    _ keyCode: CGKeyCode,
+    keyDown: Bool,
+    flags: CGEventFlags,
+    source: CGEventSource
+) throws {
+    guard
+        let event = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: keyDown)
+    else {
+        throw RegionShotError.accessibilityQueryFailed("Failed to create keyboard event for virtual key \(keyCode).")
+    }
+
+    event.flags = flags
+    event.post(tap: .cgSessionEventTap)
+    Thread.sleep(forTimeInterval: 0.005)
 }
 
 private func pressEscapeKey(inProcess processID: pid_t) {
