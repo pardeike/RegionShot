@@ -257,8 +257,8 @@ text inspection report.
 The default `layout` style renders sparse borders, dividers, and scrollbars,
 then overlays Vision OCR text at approximate screenshot positions. The OCR
 block list is printed below the layout map with pixel bounds and confidence.
-By default RegionShot leaves Vision's recognition languages unset. Use
-`--ascii-language CODE[,CODE...]` to pass explicit OCR language codes.
+By default RegionShot asks Vision to detect text languages automatically. Use
+`--ascii-language CODE[,CODE...]` to pass explicit OCR language codes instead.
 
 Useful options:
 

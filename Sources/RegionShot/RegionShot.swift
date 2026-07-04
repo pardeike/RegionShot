@@ -7,7 +7,7 @@ import Foundation
 import ImageIO
 @preconcurrency import ScreenCaptureKit
 import UniformTypeIdentifiers
-@preconcurrency import Vision
+import Vision
 
 @main
 struct RegionShot {
@@ -45,7 +45,7 @@ struct RegionShot {
                 let json = try findApps(using: command)
                 print(json)
             case .asciiArt(let command):
-                let text = try asciiArtReport(using: command)
+                let text = try await asciiArtReport(using: command)
                 print(text)
             case .capture(let command):
                 try await capture(using: command)
@@ -3773,12 +3773,12 @@ private func captureVisibleWindow(using command: VisibleWindowCaptureCommand) th
     }
 }
 
-private func asciiArtReport(using command: AsciiArtCommand) throws -> String {
+private func asciiArtReport(using command: AsciiArtCommand) async throws -> String {
     let image = try loadImage(at: command.imageURL)
     let ocrStatus: OCRReportStatus
     if command.includeOCR {
         do {
-            ocrStatus = .blocks(try recognizeTextBlocks(
+            ocrStatus = .blocks(try await recognizeTextBlocks(
                 in: image,
                 recognitionLanguages: command.recognitionLanguages
             ))
@@ -4296,15 +4296,14 @@ private func writeLayoutText(
     }
 }
 
-private func recognizeTextBlocks(in image: CGImage, recognitionLanguages: [String]) throws -> [OCRTextBlock] {
+private func recognizeTextBlocks(in image: CGImage, recognitionLanguages: [String]) async throws -> [OCRTextBlock] {
     let ocrImage = try normalizedImageForOCR(image)
-    let request = VNRecognizeTextRequest()
-    configureTextRecognitionRequest(request, recognitionLanguages: recognitionLanguages)
+    var request = RecognizeTextRequest()
+    configureTextRecognitionRequest(&request, recognitionLanguages: recognitionLanguages)
 
-    let handler = VNImageRequestHandler(cgImage: ocrImage, options: [:])
-    try handler.perform([request])
+    let observations = try await request.perform(on: ocrImage)
 
-    let blocks = (request.results ?? []).compactMap { observation -> OCRTextBlock? in
+    let blocks = observations.compactMap { observation -> OCRTextBlock? in
         guard let candidate = observation.topCandidates(1).first else {
             return nil
         }
@@ -4318,7 +4317,7 @@ private func recognizeTextBlocks(in image: CGImage, recognitionLanguages: [Strin
             text: text,
             confidence: candidate.confidence,
             bounds: pixelBounds(
-                forNormalizedVisionRect: observation.boundingBox,
+                forNormalizedVisionRect: observation.boundingBox.cgRect,
                 imageWidth: ocrImage.width,
                 imageHeight: ocrImage.height
             )
@@ -4328,11 +4327,15 @@ private func recognizeTextBlocks(in image: CGImage, recognitionLanguages: [Strin
     return sortedOCRTextBlocks(blocks)
 }
 
-func configureTextRecognitionRequest(_ request: VNRecognizeTextRequest, recognitionLanguages: [String]) {
+func configureTextRecognitionRequest(_ request: inout RecognizeTextRequest, recognitionLanguages: [String]) {
     request.recognitionLevel = .accurate
     request.usesLanguageCorrection = true
-    if !recognitionLanguages.isEmpty {
-        request.recognitionLanguages = recognitionLanguages
+    if recognitionLanguages.isEmpty {
+        request.automaticallyDetectsLanguage = true
+        request.recognitionLanguages = []
+    } else {
+        request.automaticallyDetectsLanguage = false
+        request.recognitionLanguages = recognitionLanguages.map(Locale.Language.init(identifier:))
     }
 }
 

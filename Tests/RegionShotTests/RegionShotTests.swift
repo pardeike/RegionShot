@@ -1373,20 +1373,25 @@ final class RegionShotTests: XCTestCase {
     }
 
     func testTextRecognitionRequestUsesExplicitLanguagesOnlyWhenProvided() {
-        let requestWithDefaultLanguages = VNRecognizeTextRequest()
-        requestWithDefaultLanguages.recognitionLanguages = ["fr-FR"]
-        configureTextRecognitionRequest(requestWithDefaultLanguages, recognitionLanguages: [])
+        var requestWithDefaultLanguages = RecognizeTextRequest()
+        requestWithDefaultLanguages.recognitionLanguages = [Locale.Language(identifier: "fr-FR")]
+        configureTextRecognitionRequest(&requestWithDefaultLanguages, recognitionLanguages: [])
 
         XCTAssertEqual(requestWithDefaultLanguages.recognitionLevel, .accurate)
         XCTAssertTrue(requestWithDefaultLanguages.usesLanguageCorrection)
-        XCTAssertEqual(requestWithDefaultLanguages.recognitionLanguages, ["fr-FR"])
+        XCTAssertTrue(requestWithDefaultLanguages.automaticallyDetectsLanguage)
+        XCTAssertEqual(requestWithDefaultLanguages.recognitionLanguages, [])
 
-        let requestWithExplicitLanguages = VNRecognizeTextRequest()
-        configureTextRecognitionRequest(requestWithExplicitLanguages, recognitionLanguages: ["de-DE", "sv-SE"])
+        var requestWithExplicitLanguages = RecognizeTextRequest()
+        configureTextRecognitionRequest(&requestWithExplicitLanguages, recognitionLanguages: ["de-DE", "sv-SE"])
 
         XCTAssertEqual(requestWithExplicitLanguages.recognitionLevel, .accurate)
         XCTAssertTrue(requestWithExplicitLanguages.usesLanguageCorrection)
-        XCTAssertEqual(requestWithExplicitLanguages.recognitionLanguages, ["de-DE", "sv-SE"])
+        XCTAssertFalse(requestWithExplicitLanguages.automaticallyDetectsLanguage)
+        XCTAssertEqual(
+            requestWithExplicitLanguages.recognitionLanguages,
+            [Locale.Language(identifier: "de-DE"), Locale.Language(identifier: "sv-SE")]
+        )
     }
 
     func testAccessibilityElementResponseEncodesStateAttributes() throws {
