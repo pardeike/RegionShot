@@ -288,6 +288,62 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
+    func testScreenRegionCapturePreflightsBeforeLaunchingScreencapture() throws {
+        let outputURL = URL(fileURLWithPath: "/tmp/regionshot-unit-test.png")
+        var events: [String] = []
+
+        try captureScreenRegion(
+            region: CaptureRegion(x: 1, y: 2, width: 3, height: 4),
+            outputURL: outputURL,
+            ensureAccess: {
+                events.append("preflight")
+            },
+            runCapture: { region, url in
+                events.append("capture")
+                XCTAssertEqual(region.rectangleArgument, "1,2,3,4")
+                XCTAssertEqual(url, outputURL)
+                return ScreenCaptureProcessResult(terminationStatus: 0, standardError: "")
+            },
+            fileExists: { path in
+                events.append("file-exists")
+                XCTAssertEqual(path, outputURL.path)
+                return true
+            }
+        )
+
+        XCTAssertEqual(events, ["preflight", "capture", "file-exists"])
+    }
+
+    func testScreenRegionCaptureDoesNotLaunchScreencaptureWhenPreflightFails() {
+        let outputURL = URL(fileURLWithPath: "/tmp/regionshot-unit-test.png")
+        var events: [String] = []
+
+        XCTAssertThrowsError(
+            try captureScreenRegion(
+                region: CaptureRegion(x: 1, y: 2, width: 3, height: 4),
+                outputURL: outputURL,
+                ensureAccess: {
+                    events.append("preflight")
+                    throw RegionShotError.capturePermissionDenied
+                },
+                runCapture: { _, _ in
+                    XCTFail("screencapture should not run after preflight failure.")
+                    return ScreenCaptureProcessResult(terminationStatus: 0, standardError: "")
+                },
+                fileExists: { _ in
+                    XCTFail("capture output should not be checked after preflight failure.")
+                    return false
+                }
+            )
+        ) { error in
+            guard case RegionShotError.capturePermissionDenied = error else {
+                return XCTFail("Expected capturePermissionDenied, got \(error).")
+            }
+        }
+
+        XCTAssertEqual(events, ["preflight"])
+    }
+
     func testVisibleWindowCatalogFiltersToNormalVisibleWindows() {
         let snapshots = [
             WindowSnapshot(

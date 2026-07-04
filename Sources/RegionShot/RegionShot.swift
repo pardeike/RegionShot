@@ -1803,6 +1803,43 @@ private func capture(using command: CaptureCommand) async throws {
 }
 
 private func captureScreenRegion(region: CaptureRegion, outputURL: URL) throws {
+    try captureScreenRegion(
+        region: region,
+        outputURL: outputURL,
+        ensureAccess: ensureScreenCaptureAccess,
+        runCapture: runScreenCaptureProcess,
+        fileExists: { FileManager.default.fileExists(atPath: $0) }
+    )
+}
+
+struct ScreenCaptureProcessResult {
+    let terminationStatus: Int32
+    let standardError: String
+}
+
+func captureScreenRegion(
+    region: CaptureRegion,
+    outputURL: URL,
+    ensureAccess: () throws -> Void,
+    runCapture: (CaptureRegion, URL) throws -> ScreenCaptureProcessResult,
+    fileExists: (String) -> Bool
+) throws {
+    try ensureAccess()
+
+    let result = try runCapture(region, outputURL)
+
+    guard result.terminationStatus == 0 else {
+        let errorText = result.standardError.trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = errorText.isEmpty ? "screencapture exited with status \(result.terminationStatus)." : errorText
+        throw RegionShotError.captureFailed(message)
+    }
+
+    guard fileExists(outputURL.path) else {
+        throw RegionShotError.captureFailed("Capture succeeded but no PNG was written to \(outputURL.path).")
+    }
+}
+
+private func runScreenCaptureProcess(region: CaptureRegion, outputURL: URL) throws -> ScreenCaptureProcessResult {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
     process.arguments = [
@@ -1819,19 +1856,15 @@ private func captureScreenRegion(region: CaptureRegion, outputURL: URL) throws {
     try process.run()
     process.waitUntilExit()
 
-    let errorText = String(
+    let standardErrorText = String(
         decoding: standardError.fileHandleForReading.readDataToEndOfFile(),
         as: UTF8.self
-    ).trimmingCharacters(in: .whitespacesAndNewlines)
+    )
 
-    guard process.terminationStatus == 0 else {
-        let message = errorText.isEmpty ? "screencapture exited with status \(process.terminationStatus)." : errorText
-        throw RegionShotError.captureFailed(message)
-    }
-
-    guard FileManager.default.fileExists(atPath: outputURL.path) else {
-        throw RegionShotError.captureFailed("Capture succeeded but no PNG was written to \(outputURL.path).")
-    }
+    return ScreenCaptureProcessResult(
+        terminationStatus: process.terminationStatus,
+        standardError: standardErrorText
+    )
 }
 
 private func listWindows(using command: ListWindowsCommand) async throws -> String {
