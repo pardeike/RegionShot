@@ -4008,7 +4008,7 @@ private func runningApplicationSearchTexts(for application: NSRunningApplication
     ].compactMap { $0 }
 }
 
-private func applicationSearchScore(
+func applicationSearchScore(
     for texts: [String],
     query: String
 ) -> Int? {

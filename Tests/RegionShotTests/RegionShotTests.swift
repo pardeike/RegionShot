@@ -265,6 +265,25 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
+    func testApplicationSearchScoreRanksExactPathStemAndContainsMatches() {
+        let cases: [(texts: [String], query: String, score: Int?)] = [
+            (["Terminal"], "terminal", 0),
+            (["/Applications/Utilities/Terminal.app"], "Terminal", 1),
+            (["com.apple.Terminal"], "apple.term", 10),
+            (["Terminal", "/Applications/Utilities/Terminal.app"], "Terminal", 0),
+            (["Terminal"], "Safari", nil),
+            (["Terminal"], "  ", nil),
+        ]
+
+        for testCase in cases {
+            XCTAssertEqual(
+                applicationSearchScore(for: testCase.texts, query: testCase.query),
+                testCase.score,
+                "query: \(testCase.query), texts: \(testCase.texts)"
+            )
+        }
+    }
+
     func testScreenCaptureTimeoutParsing() throws {
         let behavior = try parse(arguments: [
             "--app", "Terminal",
