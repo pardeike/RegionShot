@@ -316,7 +316,7 @@ private struct VisibleWindowCatalog {
     let windows: [VisibleCatalogWindow]
 }
 
-private struct AutomationApplication {
+struct AutomationApplication {
     let name: String
     let bundleIdentifier: String
     let processID: pid_t
@@ -348,7 +348,7 @@ private struct AccessibilityWindowCatalog {
     let windows: [AccessibilityCatalogWindow]
 }
 
-private struct MenuBarItemCatalog {
+struct MenuBarItemCatalog {
     let application: AutomationApplication
     let items: [MenuBarCatalogItem]
 }
@@ -365,7 +365,7 @@ private struct AccessibilityCatalogWindow {
     let element: AXUIElement
 }
 
-private struct MenuBarCatalogItem {
+struct MenuBarCatalogItem {
     let index: Int
     let source: String
     let role: String?
@@ -3505,7 +3505,7 @@ private func appendMenuBarItems(
     }
 }
 
-private func selectMenuBarItem(
+func selectMenuBarItem(
     from catalog: MenuBarItemCatalog,
     using selection: MenuBarSelection?
 ) throws -> MenuBarCatalogItem {

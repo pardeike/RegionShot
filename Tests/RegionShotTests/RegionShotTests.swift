@@ -1155,6 +1155,83 @@ final class RegionShotTests: XCTestCase {
         )
     }
 
+    func testSelectMenuBarItemDefaultsToSingleExtrasItem() throws {
+        let catalog = menuBarCatalog(
+            items: [
+                menuBarItem(index: 0, source: "main-menu", title: "File"),
+                menuBarItem(index: 1, source: "extras", title: nil),
+            ]
+        )
+
+        let selected = try selectMenuBarItem(from: catalog, using: nil)
+
+        XCTAssertEqual(selected.index, 1)
+        XCTAssertEqual(selected.source, "extras")
+    }
+
+    func testSelectMenuBarItemDefaultsToOnlyItem() throws {
+        let catalog = menuBarCatalog(items: [menuBarItem(index: 0, source: "main-menu", title: "File")])
+
+        let selected = try selectMenuBarItem(from: catalog, using: nil)
+
+        XCTAssertEqual(selected.index, 0)
+    }
+
+    func testSelectMenuBarItemPrefersExactNameMatch() throws {
+        let catalog = menuBarCatalog(
+            items: [
+                menuBarItem(index: 0, source: "extras", title: "Drafty Helper"),
+                menuBarItem(index: 1, source: "extras", title: "Drafty"),
+            ]
+        )
+
+        let selected = try selectMenuBarItem(from: catalog, using: .name("drafty"))
+
+        XCTAssertEqual(selected.index, 1)
+    }
+
+    func testSelectMenuBarItemMatchesDescriptionAndIdentifier() throws {
+        let catalog = menuBarCatalog(
+            items: [
+                menuBarItem(index: 0, source: "extras", title: nil, description: "Quick Tasks"),
+                menuBarItem(index: 1, source: "extras", title: nil, identifier: "com.example.settings"),
+            ]
+        )
+
+        let descriptionMatch = try selectMenuBarItem(from: catalog, using: .name("quick"))
+        let identifierMatch = try selectMenuBarItem(from: catalog, using: .name("settings"))
+
+        XCTAssertEqual(descriptionMatch.index, 0)
+        XCTAssertEqual(identifierMatch.index, 1)
+    }
+
+    func testSelectMenuBarItemReportsAmbiguousPartialMatches() {
+        let catalog = menuBarCatalog(
+            items: [
+                menuBarItem(index: 0, source: "extras", title: "Drafty"),
+                menuBarItem(index: 1, source: "extras", title: "Drafty Helper"),
+            ]
+        )
+
+        XCTAssertThrowsError(
+            try selectMenuBarItem(from: catalog, using: .name("draft"))
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("More than one menu-bar item"))
+            XCTAssertTrue(String(describing: error).contains("[0]"))
+            XCTAssertTrue(String(describing: error).contains("[1]"))
+        }
+    }
+
+    func testSelectMenuBarItemReportsMissingIndex() {
+        let catalog = menuBarCatalog(items: [menuBarItem(index: 0, source: "extras", title: "Drafty")])
+
+        XCTAssertThrowsError(
+            try selectMenuBarItem(from: catalog, using: .index(2))
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("No menu-bar item at index 2"))
+        }
+    }
+
     func testWaitForStableMenuBarSurfaceFrameReturnsFirstRepeatedFrame() {
         let first = CGRect(x: 10, y: 20, width: 100, height: 50)
         let moving = CGRect(x: 10, y: 24, width: 100, height: 50)
@@ -1269,6 +1346,39 @@ private func borderedPixels(width: Int, height: Int) -> [UInt8] {
             row == 0 || row == height - 1 || column == 0 || column == width - 1 ? UInt8(0) : UInt8(255)
         }
     }
+}
+
+private func menuBarCatalog(items: [MenuBarCatalogItem]) -> MenuBarItemCatalog {
+    MenuBarItemCatalog(
+        application: AutomationApplication(
+            name: "Drafty",
+            bundleIdentifier: "com.example.Drafty",
+            processID: 123
+        ),
+        items: items
+    )
+}
+
+private func menuBarItem(
+    index: Int,
+    source: String,
+    title: String?,
+    description: String? = nil,
+    identifier: String? = nil
+) -> MenuBarCatalogItem {
+    MenuBarCatalogItem(
+        index: index,
+        source: source,
+        role: kAXMenuBarItemRole as String,
+        subrole: nil,
+        title: title,
+        description: description,
+        identifier: identifier,
+        frame: CGRect(x: index * 20, y: 0, width: 18, height: 20),
+        actions: [kAXPressAction as String],
+        childCount: 0,
+        element: AXUIElementCreateApplication(123)
+    )
 }
 
 private struct JSONFixture: Encodable {
