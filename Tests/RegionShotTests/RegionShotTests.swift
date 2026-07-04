@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import Vision
 import XCTest
 @testable import RegionShot
 
@@ -33,6 +34,7 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(command.maxHeight, 40)
         XCTAssertTrue(command.invert)
         XCTAssertFalse(command.includeOCR)
+        XCTAssertEqual(command.recognitionLanguages, [])
     }
 
     func testAsciiArtParsingUsesDefaults() throws {
@@ -47,6 +49,28 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(command.maxHeight, 100)
         XCTAssertFalse(command.invert)
         XCTAssertTrue(command.includeOCR)
+        XCTAssertEqual(command.recognitionLanguages, [])
+    }
+
+    func testAsciiArtParsingSupportsOCRLanguageList() throws {
+        let behavior = try parse(arguments: [
+            "--ascii", "/tmp/screenshot.png",
+            "--ascii-language", "de-DE, sv-SE",
+        ])
+
+        guard case .asciiArt(let command) = behavior else {
+            return XCTFail("Expected ascii-art behavior.")
+        }
+
+        XCTAssertEqual(command.recognitionLanguages, ["de-DE", "sv-SE"])
+    }
+
+    func testAsciiLanguageRejectsEmptyItems() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--ascii", "/tmp/screenshot.png", "--ascii-language", "de-DE,"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--ascii-language"))
+        }
     }
 
     func testAsciiArtParsingSupportsToneStyleDefaults() throws {
@@ -208,6 +232,12 @@ final class RegionShotTests: XCTestCase {
     func testAsciiArtOptionsRequireAsciiMode() {
         XCTAssertThrowsError(
             try parse(arguments: ["--ascii-width", "100"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--ascii"))
+        }
+
+        XCTAssertThrowsError(
+            try parse(arguments: ["--ascii-language", "sv-SE"])
         ) { error in
             XCTAssertTrue(String(describing: error).contains("--ascii"))
         }
@@ -378,6 +408,23 @@ final class RegionShotTests: XCTestCase {
         for (error, expectedExitCode) in expectations {
             XCTAssertEqual(error.exitCode, expectedExitCode, String(describing: error))
         }
+    }
+
+    func testTextRecognitionRequestUsesExplicitLanguagesOnlyWhenProvided() {
+        let requestWithDefaultLanguages = VNRecognizeTextRequest()
+        requestWithDefaultLanguages.recognitionLanguages = ["fr-FR"]
+        configureTextRecognitionRequest(requestWithDefaultLanguages, recognitionLanguages: [])
+
+        XCTAssertEqual(requestWithDefaultLanguages.recognitionLevel, .accurate)
+        XCTAssertTrue(requestWithDefaultLanguages.usesLanguageCorrection)
+        XCTAssertEqual(requestWithDefaultLanguages.recognitionLanguages, ["fr-FR"])
+
+        let requestWithExplicitLanguages = VNRecognizeTextRequest()
+        configureTextRecognitionRequest(requestWithExplicitLanguages, recognitionLanguages: ["de-DE", "sv-SE"])
+
+        XCTAssertEqual(requestWithExplicitLanguages.recognitionLevel, .accurate)
+        XCTAssertTrue(requestWithExplicitLanguages.usesLanguageCorrection)
+        XCTAssertEqual(requestWithExplicitLanguages.recognitionLanguages, ["de-DE", "sv-SE"])
     }
 
     func testVisibleWindowCatalogFiltersToNormalVisibleWindows() {

@@ -87,6 +87,7 @@ struct AsciiArtCommand: Sendable {
     let maxHeight: Int
     let invert: Bool
     let includeOCR: Bool
+    let recognitionLanguages: [String]
 }
 
 struct ListWindowsCommand: Sendable {
@@ -673,7 +674,7 @@ Output:
 
 Forms:
   regionshot --find-app TEXT
-  regionshot --ascii IMAGE [--ascii-style layout|tone] [--ascii-width N] [--ascii-max-height N] [--ascii-invert] [--ascii-no-ocr]
+  regionshot --ascii IMAGE [--ascii-style layout|tone] [--ascii-width N] [--ascii-max-height N] [--ascii-language CODE[,CODE...]] [--ascii-invert] [--ascii-no-ocr]
   regionshot X Y WIDTH HEIGHT [--app APP] [--output FILE]
   regionshot --x X --y Y --width WIDTH --height HEIGHT [--app APP] [--output FILE]
   regionshot --app APP [--timeout SECONDS]
@@ -716,6 +717,7 @@ Rules:
   `--ascii-style layout` is the default; use `--ascii-style tone` for the old luminance-ramp rendering
   layout defaults: `--ascii-width 160`, `--ascii-max-height 100`; tone defaults: width 120, max-height 80
   `--ascii-width` accepts 16...240; `--ascii-max-height` accepts 8...240
+  `--ascii-language` passes one or more comma-separated OCR language codes to Vision; omit it for Vision's default detection
   `--ascii-invert` flips light/dark mapping for tone style; `--ascii-no-ocr` disables Vision text recognition
   `--app` alone == inspect mode == same as `--list-windows`
   window list JSON includes frontmost-first indices, titles, and bounds
@@ -1075,6 +1077,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     let outputPath = parsed.values["--output"]
     let asciiImagePath = normalizedArgumentValue(parsed.values["--ascii"])
     let asciiStyle = try parseAsciiStyle(parsed.values["--ascii-style"])
+    let asciiRecognitionLanguages = try parseOCRLanguages(parsed.values["--ascii-language"])
     let wantsAsciiInvert = parsed.flags.contains("--ascii-invert")
     let wantsAsciiNoOCR = parsed.flags.contains("--ascii-no-ocr")
     let asciiDefaultWidth = asciiStyle == .layout ? defaultLayoutAsciiWidth : defaultToneAsciiWidth
@@ -1082,6 +1085,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     let hasAsciiOption = parsed.values["--ascii-width"] != nil ||
         parsed.values["--ascii-max-height"] != nil ||
         parsed.values["--ascii-style"] != nil ||
+        parsed.values["--ascii-language"] != nil ||
         wantsAsciiInvert ||
         wantsAsciiNoOCR
 
@@ -1098,7 +1102,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     }
 
     if let asciiImagePath {
-        let allowedValueKeys: Set<String> = ["--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style"]
+        let allowedValueKeys: Set<String> = ["--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language"]
         let allowedFlagKeys: Set<String> = ["--help", "-h", "--ascii-invert", "--ascii-no-ocr"]
         let hasOtherValue = parsed.values.keys.contains { !allowedValueKeys.contains($0) }
         let hasOtherFlag = parsed.flags.contains { !allowedFlagKeys.contains($0) }
@@ -1124,13 +1128,14 @@ func parse(arguments: [String]) throws -> CommandBehavior {
                     allowedRange: asciiMaxHeightRange
                 ),
                 invert: wantsAsciiInvert,
-                includeOCR: !wantsAsciiNoOCR
+                includeOCR: !wantsAsciiNoOCR,
+                recognitionLanguages: asciiRecognitionLanguages
             )
         )
     }
 
     if hasAsciiOption {
-        throw RegionShotError.invalidArguments("`--ascii-style`, `--ascii-width`, `--ascii-max-height`, `--ascii-invert`, and `--ascii-no-ocr` require `--ascii IMAGE`.")
+        throw RegionShotError.invalidArguments("`--ascii-style`, `--ascii-width`, `--ascii-max-height`, `--ascii-language`, `--ascii-invert`, and `--ascii-no-ocr` require `--ascii IMAGE`.")
     }
 
     if let findAppQuery {
@@ -1496,7 +1501,7 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         case "--help", "-h", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--press", "--press-element", "--raise-window", "--raise", "--capture-menu", "--ascii-invert", "--ascii-no-ocr":
             flags.insert(argument)
             index += 1
-        case "--x", "--y", "--width", "--height", "--output", "--app", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style":
+        case "--x", "--y", "--width", "--height", "--output", "--app", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
             let valueIndex = index + 1
             guard valueIndex < arguments.count else {
                 throw RegionShotError.invalidArguments("Missing value for \(argument).")
@@ -1738,6 +1743,22 @@ private func parseAsciiStyle(_ rawValue: String?) throws -> AsciiArtStyle {
     }
 
     return style
+}
+
+func parseOCRLanguages(_ rawValue: String?) throws -> [String] {
+    guard let rawValue else {
+        return []
+    }
+
+    let languages = rawValue
+        .split(separator: ",", omittingEmptySubsequences: false)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    guard !languages.isEmpty, languages.allSatisfy({ !$0.isEmpty }) else {
+        throw RegionShotError.invalidArguments("`--ascii-language` requires one or more comma-separated language codes.")
+    }
+
+    return languages
 }
 
 private func parseAsciiDimension(
@@ -2139,7 +2160,10 @@ private func asciiArtReport(using command: AsciiArtCommand) throws -> String {
     let ocrStatus: OCRReportStatus
     if command.includeOCR {
         do {
-            ocrStatus = .blocks(try recognizeTextBlocks(in: image))
+            ocrStatus = .blocks(try recognizeTextBlocks(
+                in: image,
+                recognitionLanguages: command.recognitionLanguages
+            ))
         } catch {
             ocrStatus = .unavailable(error.localizedDescription)
         }
@@ -2645,14 +2669,10 @@ private func writeLayoutText(
     }
 }
 
-private func recognizeTextBlocks(in image: CGImage) throws -> [OCRTextBlock] {
+private func recognizeTextBlocks(in image: CGImage, recognitionLanguages: [String]) throws -> [OCRTextBlock] {
     let ocrImage = try normalizedImageForOCR(image)
     let request = VNRecognizeTextRequest()
-    request.recognitionLevel = .accurate
-    request.usesLanguageCorrection = true
-    if let englishLanguage = try? request.supportedRecognitionLanguages().first(where: { $0 == "en-US" }) {
-        request.recognitionLanguages = [englishLanguage]
-    }
+    configureTextRecognitionRequest(request, recognitionLanguages: recognitionLanguages)
 
     let handler = VNImageRequestHandler(cgImage: ocrImage, options: [:])
     try handler.perform([request])
@@ -2679,6 +2699,14 @@ private func recognizeTextBlocks(in image: CGImage) throws -> [OCRTextBlock] {
     }
 
     return sortedOCRTextBlocks(blocks)
+}
+
+func configureTextRecognitionRequest(_ request: VNRecognizeTextRequest, recognitionLanguages: [String]) {
+    request.recognitionLevel = .accurate
+    request.usesLanguageCorrection = true
+    if !recognitionLanguages.isEmpty {
+        request.recognitionLanguages = recognitionLanguages
+    }
 }
 
 private func normalizedImageForOCR(_ image: CGImage) throws -> CGImage {
