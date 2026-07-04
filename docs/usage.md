@@ -9,6 +9,16 @@ help text from the installed binary.
 regionshot --version
 ```
 
+## Doctor
+
+```bash
+regionshot doctor
+```
+
+`doctor` prints compact JSON with non-prompting Screen Recording and
+Accessibility permission status, the RegionShot version, and the parent host
+process that macOS permissions apply to.
+
 ## Basic Capture
 
 ```bash
@@ -224,6 +234,9 @@ host process.
 
 The host process is the app that starts `regionshot`, such as Terminal, iTerm,
 or Codex.
+
+Use `regionshot doctor` to check both permissions without triggering a system
+permission prompt.
 
 ## Exit Codes
 

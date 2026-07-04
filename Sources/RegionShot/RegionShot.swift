@@ -22,6 +22,9 @@ struct RegionShot {
                 print(usageText)
             case .showVersion:
                 print("regionshot \(currentRegionShotVersion())")
+            case .doctor:
+                let json = try encodeJSON(currentDoctorStatus())
+                print(json)
             case .findApps(let command):
                 let json = try findApps(using: command)
                 print(json)
@@ -61,6 +64,7 @@ struct RegionShot {
 enum CommandBehavior: Sendable {
     case showHelp
     case showVersion
+    case doctor
     case findApps(FindAppsCommand)
     case asciiArt(AsciiArtCommand)
     case capture(CaptureCommand)
@@ -72,7 +76,7 @@ enum CommandBehavior: Sendable {
 
     var shouldSynchronizeCodexIntegration: Bool {
         switch self {
-        case .showHelp, .showVersion:
+        case .showHelp, .showVersion, .doctor:
             return false
         case .findApps, .asciiArt, .capture, .captureVisibleWindow, .listWindows, .listVisibleWindows, .inspectAccessibility, .menuBar:
             return true
@@ -372,6 +376,19 @@ struct WindowSnapshot {
 private struct RunningApplicationSearchResponse: Encodable {
     let query: String
     let matches: [RunningApplicationEntry]
+}
+
+struct DoctorResponse: Encodable {
+    let screenRecording: Bool
+    let accessibility: Bool
+    let version: String
+    let hostProcess: DoctorHostProcess
+}
+
+struct DoctorHostProcess: Encodable, Equatable {
+    let processID: Int32
+    let name: String
+    let bundleIdentifier: String?
 }
 
 private struct RunningApplicationEntry: Encodable {
@@ -697,6 +714,7 @@ Output:
 
 Forms:
   regionshot --version
+  regionshot doctor
   regionshot --find-app TEXT
   regionshot --ascii IMAGE [--ascii-style layout|tone] [--ascii-width N] [--ascii-max-height N] [--ascii-language CODE[,CODE...]] [--ascii-invert] [--ascii-no-ocr]
   regionshot X Y WIDTH HEIGHT [--app APP] [--output FILE]
@@ -738,6 +756,7 @@ Forms:
 
 Rules:
   `--version` prints the binary version and exits
+  `doctor` prints non-prompting permission, version, and host-process JSON
   `--app` accepts app name, bundle id, or pid; pure integers are treated as pids for compatibility
   use `--pid PID` to select by process id, or `--app-name NAME` to force name/bundle matching for numeric app names
   use `--find-app TEXT` when the exact running app name or pid is unknown
@@ -885,6 +904,40 @@ private func gitDescribeVersion(repositoryURL: URL) -> String? {
     return String(
         decoding: standardOutput.fileHandleForReading.readDataToEndOfFile(),
         as: UTF8.self
+    )
+}
+
+private func currentDoctorStatus() -> DoctorResponse {
+    doctorStatus(
+        screenRecordingAccess: { CGPreflightScreenCaptureAccess() },
+        accessibilityTrusted: { AXIsProcessTrusted() },
+        version: currentRegionShotVersion,
+        hostProcess: currentHostProcess
+    )
+}
+
+func doctorStatus(
+    screenRecordingAccess: () -> Bool,
+    accessibilityTrusted: () -> Bool,
+    version: () -> String,
+    hostProcess: () -> DoctorHostProcess
+) -> DoctorResponse {
+    DoctorResponse(
+        screenRecording: screenRecordingAccess(),
+        accessibility: accessibilityTrusted(),
+        version: version(),
+        hostProcess: hostProcess()
+    )
+}
+
+private func currentHostProcess() -> DoctorHostProcess {
+    let parentProcessID = getppid()
+    let runningApplication = NSRunningApplication(processIdentifier: parentProcessID)
+
+    return DoctorHostProcess(
+        processID: parentProcessID,
+        name: runningApplication?.localizedName ?? "pid \(parentProcessID)",
+        bundleIdentifier: runningApplication?.bundleIdentifier
     )
 }
 
@@ -1178,6 +1231,13 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         return .showHelp
     }
 
+    if arguments.first == "doctor" {
+        guard arguments.count == 1 else {
+            throw RegionShotError.invalidArguments("`doctor` does not accept additional arguments.")
+        }
+        return .doctor
+    }
+
     let parsed = try parseRawArguments(arguments)
 
     if parsed.flags.contains("--help") || parsed.flags.contains("-h") {
@@ -1186,6 +1246,14 @@ func parse(arguments: [String]) throws -> CommandBehavior {
 
     if parsed.flags.contains("--version") {
         return .showVersion
+    }
+
+    if parsed.flags.contains("--doctor") {
+        let hasOtherFlag = parsed.flags.contains { $0 != "--doctor" }
+        if parsed.region != nil || !parsed.values.isEmpty || hasOtherFlag {
+            throw RegionShotError.invalidArguments("`--doctor` cannot be combined with other arguments.")
+        }
+        return .doctor
     }
 
     let applicationSelector = try parseApplicationSelector(values: parsed.values)
@@ -1652,7 +1720,7 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         let argument = arguments[index]
 
         switch argument {
-        case "--help", "-h", "--version", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--press", "--press-element", "--raise-window", "--raise", "--capture-menu", "--ascii-invert", "--ascii-no-ocr":
+        case "--help", "-h", "--version", "--doctor", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--press", "--press-element", "--raise-window", "--raise", "--capture-menu", "--ascii-invert", "--ascii-no-ocr":
             flags.insert(argument)
             index += 1
         case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--depth", "--max-children", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":

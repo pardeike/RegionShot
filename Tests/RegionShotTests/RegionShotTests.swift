@@ -23,10 +23,37 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
+    func testDoctorParsing() throws {
+        let subcommandBehavior = try parse(arguments: ["doctor"])
+        guard case .doctor = subcommandBehavior else {
+            return XCTFail("Expected doctor behavior.")
+        }
+
+        let flagBehavior = try parse(arguments: ["--doctor"])
+        guard case .doctor = flagBehavior else {
+            return XCTFail("Expected doctor behavior.")
+        }
+    }
+
+    func testDoctorRejectsMixedArguments() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["doctor", "--app", "Terminal"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("doctor"))
+        }
+
+        XCTAssertThrowsError(
+            try parse(arguments: ["--doctor", "--app", "Terminal"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--doctor"))
+        }
+    }
+
     func testPassiveCommandsDoNotSynchronizeCodexIntegration() throws {
         XCTAssertFalse(try parse(arguments: []).shouldSynchronizeCodexIntegration)
         XCTAssertFalse(try parse(arguments: ["--help"]).shouldSynchronizeCodexIntegration)
         XCTAssertFalse(try parse(arguments: ["--version"]).shouldSynchronizeCodexIntegration)
+        XCTAssertFalse(try parse(arguments: ["doctor"]).shouldSynchronizeCodexIntegration)
     }
 
     func testOperationalCommandsSynchronizeCodexIntegration() throws {
@@ -605,6 +632,26 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(stringifyAXAttributeValue(NSNumber(value: 42)), "42")
         XCTAssertEqual(stringifyAXAttributeValue(URL(string: "file:///tmp/example.txt")!), "file:///tmp/example.txt")
         XCTAssertNil(stringifyAXAttributeValue(["unsupported"]))
+    }
+
+    func testDoctorStatusEncodesPermissionAndHostState() throws {
+        let response = doctorStatus(
+            screenRecordingAccess: { true },
+            accessibilityTrusted: { false },
+            version: { "1.2.3" },
+            hostProcess: {
+                DoctorHostProcess(
+                    processID: 42,
+                    name: "iTerm2",
+                    bundleIdentifier: "com.googlecode.iterm2"
+                )
+            }
+        )
+
+        XCTAssertEqual(
+            try encodeJSON(response),
+            #"{"accessibility":false,"hostProcess":{"bundleIdentifier":"com.googlecode.iterm2","name":"iTerm2","processID":42},"screenRecording":true,"version":"1.2.3"}"#
+        )
     }
 
     func testRegionShotVersionPrefersEnvironmentOverride() {
