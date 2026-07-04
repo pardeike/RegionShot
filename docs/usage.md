@@ -117,6 +117,8 @@ regionshot --app "System Settings" --window-name "<window title>" --press --role
 `--list-elements` prints a bounded JSON accessibility tree for the selected
 window. If you omit a window selector, RegionShot uses the focused window, then
 the main window, then the first accessibility window.
+Element JSON includes structural fields plus readable state when macOS exposes
+it: `value`, `enabled`, `focused`, and `selected`.
 
 `--press` finds a pressable accessibility element using selector fields such as
 `--role`, `--subrole`, `--title`, `--identifier`, and `--description`, then

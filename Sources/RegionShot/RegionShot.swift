@@ -418,7 +418,7 @@ private struct VisibleWindowEntry: Encodable {
     let layer: Int
 }
 
-private struct JSONRect: Encodable {
+struct JSONRect: Encodable {
     let x: Double
     let y: Double
     let width: Double
@@ -504,12 +504,16 @@ private struct AccessibilityWindowEntry: Encodable {
     let actions: [String]
 }
 
-private struct AccessibilityElementResponse: Encodable {
+struct AccessibilityElementResponse: Encodable {
     let role: String?
     let subrole: String?
     let title: String?
     let description: String?
     let identifier: String?
+    let value: String?
+    let enabled: Bool?
+    let focused: Bool?
+    let selected: Bool?
     let frame: JSONRect?
     let actions: [String]
     let childCount: Int?
@@ -3903,6 +3907,10 @@ private func accessibilityElementResponse(
         title: normalizedTitle(copyAXString(from: element, attribute: kAXTitleAttribute as CFString)),
         description: normalizedTitle(copyAXString(from: element, attribute: kAXDescriptionAttribute as CFString)),
         identifier: normalizedTitle(copyAXString(from: element, attribute: kAXIdentifierAttribute as CFString)),
+        value: copyAXStringifiedValue(from: element, attribute: kAXValueAttribute as CFString),
+        enabled: copyAXBool(from: element, attribute: kAXEnabledAttribute as CFString),
+        focused: copyAXBool(from: element, attribute: kAXFocusedAttribute as CFString),
+        selected: copyAXBool(from: element, attribute: kAXSelectedAttribute as CFString),
         frame: copyAXFrame(from: element).map(JSONRect.init),
         actions: copyAXActions(from: element),
         childCount: children.count,
@@ -4611,6 +4619,49 @@ private func copyAXString(from element: AXUIElement, attribute: CFString) -> Str
         return nil
     }
     return value as? String
+}
+
+private func copyAXStringifiedValue(from element: AXUIElement, attribute: CFString) -> String? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success, let value else {
+        return nil
+    }
+
+    return stringifyAXAttributeValue(value)
+}
+
+private func copyAXBool(from element: AXUIElement, attribute: CFString) -> Bool? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success, let value else {
+        return nil
+    }
+
+    if let boolValue = value as? Bool {
+        return boolValue
+    }
+
+    if let numberValue = value as? NSNumber {
+        return numberValue.boolValue
+    }
+
+    return nil
+}
+
+func stringifyAXAttributeValue(_ value: Any) -> String? {
+    switch value {
+    case let string as String:
+        return normalizedTitle(singleLineText(string))
+    case let attributedString as NSAttributedString:
+        return normalizedTitle(singleLineText(attributedString.string))
+    case let bool as Bool:
+        return bool ? "true" : "false"
+    case let number as NSNumber:
+        return number.stringValue
+    case let url as URL:
+        return url.absoluteString
+    default:
+        return nil
+    }
 }
 
 private func copyAXElement(from element: AXUIElement, attribute: CFString) -> AXUIElement? {

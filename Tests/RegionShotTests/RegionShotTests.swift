@@ -445,6 +445,40 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(requestWithExplicitLanguages.recognitionLanguages, ["de-DE", "sv-SE"])
     }
 
+    func testAccessibilityElementResponseEncodesStateAttributes() throws {
+        let response = AccessibilityElementResponse(
+            role: "AXCheckBox",
+            subrole: nil,
+            title: "Enable Sync",
+            description: nil,
+            identifier: "sync",
+            value: "1",
+            enabled: true,
+            focused: false,
+            selected: true,
+            frame: nil,
+            actions: ["AXPress"],
+            childCount: 0,
+            truncated: nil,
+            children: nil
+        )
+
+        XCTAssertEqual(
+            try encodeJSON(response),
+            #"{"actions":["AXPress"],"childCount":0,"enabled":true,"focused":false,"identifier":"sync","role":"AXCheckBox","selected":true,"title":"Enable Sync","value":"1"}"#
+        )
+    }
+
+    func testStringifyAXAttributeValueNormalizesCommonStateValues() {
+        XCTAssertEqual(stringifyAXAttributeValue("  Hello\nWorld  "), "Hello World")
+        XCTAssertEqual(stringifyAXAttributeValue(NSAttributedString(string: "Styled")), "Styled")
+        XCTAssertEqual(stringifyAXAttributeValue(true), "true")
+        XCTAssertEqual(stringifyAXAttributeValue(false), "false")
+        XCTAssertEqual(stringifyAXAttributeValue(NSNumber(value: 42)), "42")
+        XCTAssertEqual(stringifyAXAttributeValue(URL(string: "file:///tmp/example.txt")!), "file:///tmp/example.txt")
+        XCTAssertNil(stringifyAXAttributeValue(["unsupported"]))
+    }
+
     func testRegionShotVersionPrefersEnvironmentOverride() {
         let version = regionShotVersion(
             environment: ["REGIONSHOT_VERSION": " 2.0.0 \n"],
