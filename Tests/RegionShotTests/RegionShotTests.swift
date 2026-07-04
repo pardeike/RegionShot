@@ -1358,7 +1358,6 @@ final class RegionShotTests: XCTestCase {
             (.ambiguousWindow("two windows"), 65),
             (.applicationNotFound("missing app"), 66),
             (.windowNotFound("missing window"), 66),
-            (.unsupportedFeature("not available"), 69),
             (.capturePermissionDenied, 69),
             (.accessibilityPermissionDenied, 69),
             (.launchFailed("launch failed"), 70),

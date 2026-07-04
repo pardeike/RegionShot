@@ -6,7 +6,7 @@ import PackageDescription
 let package = Package(
     name: "RegionShot",
     platforms: [
-        .macOS(.v13),
+        .macOS("27.0"),
     ],
     products: [
         .executable(

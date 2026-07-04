@@ -962,7 +962,6 @@ private struct RunningApplicationMatch {
     let activationRank: Int
 }
 
-@available(macOS 14.0, *)
 private struct ShareableApplicationMatch {
     let application: SCRunningApplication
     let score: Int
@@ -974,7 +973,6 @@ enum RegionShotError: LocalizedError, Sendable {
     case invalidArguments(String)
     case invalidInteger(flag: String, value: String)
     case invalidRegion(String)
-    case unsupportedFeature(String)
     case capturePermissionDenied
     case accessibilityPermissionDenied
     case applicationNotFound(String)
@@ -994,8 +992,6 @@ enum RegionShotError: LocalizedError, Sendable {
         case .invalidInteger(let flag, let value):
             return "Expected an integer for \(flag), got `\(value)`."
         case .invalidRegion(let message):
-            return message
-        case .unsupportedFeature(let message):
             return message
         case .capturePermissionDenied:
             return "Screen Recording permission is required for app/window inspection and capture. Grant access and run the command again."
@@ -1030,7 +1026,7 @@ enum RegionShotError: LocalizedError, Sendable {
             return 65
         case .applicationNotFound, .windowNotFound:
             return 66
-        case .unsupportedFeature, .capturePermissionDenied, .accessibilityPermissionDenied:
+        case .capturePermissionDenied, .accessibilityPermissionDenied:
             return 69
         case .launchFailed, .captureFailed, .accessibilityQueryFailed, .encodeFailed:
             return 70
@@ -3193,10 +3189,6 @@ private func capture(using command: CaptureCommand) async throws {
     try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
 
     if let applicationSelector = command.applicationSelector {
-        guard #available(macOS 14.0, *) else {
-            throw RegionShotError.unsupportedFeature("App-filtered capture requires macOS 14 or newer.")
-        }
-
         let shareableContent = try await loadShareableContent(
             timeout: command.screenCaptureTimeout,
             selector: applicationSelector
@@ -3304,10 +3296,6 @@ private func runScreenCaptureProcess(region: CaptureRegion, outputURL: URL) thro
 }
 
 private func listWindows(using command: ListWindowsCommand) async throws -> String {
-    guard #available(macOS 14.0, *) else {
-        throw RegionShotError.unsupportedFeature("Window inspection requires macOS 14 or newer.")
-    }
-
     let shareableContent = try await loadShareableContent(
         timeout: command.screenCaptureTimeout,
         selector: command.applicationSelector
@@ -5293,7 +5281,6 @@ private func applicationMatchSort(
     return left.application.processIdentifier < right.application.processIdentifier
 }
 
-@available(macOS 14.0, *)
 private func shareableApplicationMatchSort(
     _ left: ShareableApplicationMatch,
     _ right: ShareableApplicationMatch
@@ -6663,11 +6650,7 @@ private func activateApplication(_ application: AutomationApplication) -> Bool {
         return false
     }
 
-    if #available(macOS 14.0, *) {
-        return runningApplication.activate(from: .current, options: [])
-    }
-
-    return runningApplication.activate(options: [])
+    return runningApplication.activate(from: .current, options: [])
 }
 
 private func performRaise(on element: AXUIElement) throws {
@@ -7046,7 +7029,6 @@ private func shellQuoted(_ value: String) -> String {
     return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
 }
 
-@available(macOS 14.0, *)
 private func loadShareableContent(
     timeout: TimeInterval,
     selector: ApplicationSelector
@@ -7067,7 +7049,6 @@ private func loadShareableContent(
     )
 }
 
-@available(macOS 14.0, *)
 private func buildWindowCatalog(selector: ApplicationSelector, in shareableContent: SCShareableContent) throws -> AppWindowCatalog {
     let application = try resolveApplication(selector: selector, in: shareableContent.applications)
     let eligibleWindows = shareableContent.windows.filter {
@@ -7178,7 +7159,6 @@ private func currentWindowSnapshots() -> [WindowSnapshot] {
     }
 }
 
-@available(macOS 14.0, *)
 private func resolveApplication(selector: ApplicationSelector, in applications: [SCRunningApplication]) throws -> SCRunningApplication {
     switch selector {
     case .processID(let processID):
@@ -7219,7 +7199,6 @@ private func resolveApplication(selector: ApplicationSelector, in applications: 
     }
 }
 
-@available(macOS 14.0, *)
 private func rankedShareableApplicationMatches(
     query: String,
     applications: [SCRunningApplication],
@@ -7253,7 +7232,6 @@ private func rankedShareableApplicationMatches(
         .sorted(by: shareableApplicationMatchSort)
 }
 
-@available(macOS 14.0, *)
 private func selectWindow(from catalog: AppWindowCatalog, using selection: WindowSelection) throws -> CatalogWindow {
     switch selection {
     case .frontmost:
@@ -7293,7 +7271,6 @@ private func selectWindow(from catalog: AppWindowCatalog, using selection: Windo
     }
 }
 
-@available(macOS 14.0, *)
 private func captureWindow(
     _ window: CatalogWindow,
     crop: WindowCropRect?,
@@ -7339,7 +7316,6 @@ private func captureWindow(
     try writePNG(image: finalImage, to: outputURL)
 }
 
-@available(macOS 14.0, *)
 private func captureApplicationRegion(
     application: SCRunningApplication,
     windows: [SCWindow],
@@ -7432,7 +7408,6 @@ private func captureApplicationRegion(
     try writePNG(image: image, to: outputURL)
 }
 
-@available(macOS 14.0, *)
 private func planDisplayCaptures(
     displays: [SCDisplay],
     windows: [SCWindow],
