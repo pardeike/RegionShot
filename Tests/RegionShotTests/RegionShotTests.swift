@@ -539,6 +539,9 @@ final class RegionShotTests: XCTestCase {
 
         XCTAssertEqual(command.treeDepth, 4)
         XCTAssertEqual(command.treeChildLimit, 25)
+        XCTAssertEqual(command.treeRoleFilter, [])
+        XCTAssertFalse(command.treeInteractiveOnly)
+        XCTAssertFalse(command.treeFlat)
     }
 
     func testAccessibilityElementListParsingSupportsTreeLimits() throws {
@@ -547,6 +550,9 @@ final class RegionShotTests: XCTestCase {
             "--list-elements",
             "--depth", "2",
             "--max-children", "10",
+            "--roles", "AXButton, AXTextField",
+            "--interactive",
+            "--flat",
         ])
 
         guard case .inspectAccessibility(let command) = behavior else {
@@ -559,6 +565,9 @@ final class RegionShotTests: XCTestCase {
 
         XCTAssertEqual(command.treeDepth, 2)
         XCTAssertEqual(command.treeChildLimit, 10)
+        XCTAssertEqual(command.treeRoleFilter, ["AXButton", "AXTextField"])
+        XCTAssertTrue(command.treeInteractiveOnly)
+        XCTAssertTrue(command.treeFlat)
     }
 
     func testAccessibilityGetElementParsing() throws {
@@ -923,9 +932,10 @@ final class RegionShotTests: XCTestCase {
 
     func testAccessibilityTreeLimitOptionsRequireElementListMode() {
         XCTAssertThrowsError(
-            try parse(arguments: ["--app", "Terminal", "--depth", "2"])
+            try parse(arguments: ["--app", "Terminal", "--depth", "2", "--interactive"])
         ) { error in
             XCTAssertTrue(String(describing: error).contains("--list-elements"))
+            XCTAssertTrue(String(describing: error).contains("--interactive"))
         }
     }
 
@@ -940,6 +950,12 @@ final class RegionShotTests: XCTestCase {
             try parse(arguments: ["--app", "Terminal", "--list-elements", "--max-children", "0"])
         ) { error in
             XCTAssertTrue(String(describing: error).contains("--max-children"))
+        }
+
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--list-elements", "--roles", "AXButton,"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--roles"))
         }
     }
 
@@ -1341,6 +1357,7 @@ final class RegionShotTests: XCTestCase {
 
     func testAccessibilityElementResponseEncodesStateAttributes() throws {
         let response = AccessibilityElementResponse(
+            path: nil,
             role: "AXCheckBox",
             subrole: nil,
             title: "Enable Sync",

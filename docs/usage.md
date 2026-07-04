@@ -165,6 +165,7 @@ menu item by title, description, or identifier.
 ```bash
 regionshot --app "System Settings" --list-elements
 regionshot --app "System Settings" --list-elements --depth 2 --max-children 12
+regionshot --app "System Settings" --list-elements --roles AXButton,AXTextField --interactive --flat
 regionshot --app "System Settings" --wait-for-window "Network" --timeout 10
 regionshot --app "System Settings" --get --role AXTextField --title Name
 regionshot --app "System Settings" --wait-for-element --role AXButton --title Done --timeout 10
@@ -185,9 +186,12 @@ regionshot --app "System Settings" --window-name "<window title>" --press --role
 window. If you omit a window selector, RegionShot uses the focused window, then
 the main window, then the first accessibility window.
 Element JSON includes structural fields plus readable state when macOS exposes
-it: `value`, `enabled`, `focused`, and `selected`.
+it: `path`, `value`, `enabled`, `focused`, and `selected`.
 Use `--depth N` and `--max-children N` with `--list-elements` to reduce or
-expand the tree.
+expand the tree. Use `--roles ROLE[,ROLE...]` to keep only matching roles and
+their ancestors, `--interactive` to keep elements with actions and their
+ancestors, and `--flat` to return a flat `elements` array instead of a nested
+tree.
 
 `--wait-for-window TITLE` polls the app's accessibility windows until one title
 matches, then returns that window as JSON. Use `--timeout SECONDS` to adjust the

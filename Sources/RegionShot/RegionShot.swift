@@ -171,6 +171,9 @@ struct AccessibilityCommand: Sendable {
     let mode: AccessibilityMode
     let treeDepth: Int
     let treeChildLimit: Int
+    let treeRoleFilter: Set<String>
+    let treeInteractiveOnly: Bool
+    let treeFlat: Bool
     let timeout: TimeInterval
 }
 
@@ -709,6 +712,12 @@ private struct AccessibilityTreeResponse: Encodable {
     let tree: AccessibilityElementResponse
 }
 
+private struct AccessibilityFlatTreeResponse: Encodable {
+    let application: WindowListApplication
+    let window: AccessibilityWindowEntry
+    let elements: [AccessibilityElementResponse]
+}
+
 private struct AccessibilityWindowListResponse: Encodable {
     let application: WindowListApplication
     let frontmostApplication: WindowListApplication?
@@ -850,6 +859,7 @@ private struct AccessibilityWindowEntry: Encodable {
 }
 
 struct AccessibilityElementResponse: Encodable {
+    let path: String?
     let role: String?
     let subrole: String?
     let title: String?
@@ -1075,7 +1085,7 @@ Forms:
   regionshot --app APP --menu-bar-item TEXT --press
   regionshot --app APP --menu-bar-item TEXT --press-menu-item TEXT
   regionshot --app APP --menu-bar-item TEXT --capture-menu [--output FILE]
-  regionshot --app APP --list-elements [--depth N] [--max-children N]
+  regionshot --app APP --list-elements [--depth N] [--max-children N] [--roles ROLE[,ROLE...]] [--interactive] [--flat]
   regionshot --app APP --wait-for-window TITLE [--timeout SECONDS]
   regionshot --app APP --get --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
   regionshot --app APP --wait-for-element --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT] [--timeout SECONDS]
@@ -1154,7 +1164,8 @@ Rules:
   `--type TEXT` posts Unicode keyboard input to the app; `--key CHORD` posts shortcuts like `cmd+s`
   `--click`, `--drag`, and `--scroll` post CGEvent mouse input to the selected window after activating it
   `--title`, `--identifier`, and `--description` prefer exact matches, then fall back to case-insensitive contains
-  `--list-elements` accepts `--depth` 0...12 and `--max-children` 1...200
+  `--list-elements` accepts `--depth` 0...12, `--max-children` 1...200, `--roles`, `--interactive`, and `--flat`
+  list-elements responses include stable `path` strings such as `0.3.1` for each returned element
   capture and ScreenCaptureKit window listing require Screen Recording permission
   accessibility inspection and actions require Accessibility permission
   rectangle mode without `--app` forwards to `screencapture -R`
@@ -1896,6 +1907,9 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         defaultValue: defaultAccessibilityTreeChildLimit,
         allowedRange: accessibilityTreeChildLimitRange
     )
+    let elementTreeRoleFilter = try parseAccessibilityRoles(parsed.values["--roles"])
+    let wantsElementTreeInteractiveOnly = parsed.flags.contains("--interactive")
+    let wantsElementTreeFlat = parsed.flags.contains("--flat")
     let wantsAccessibilityGet = parsed.flags.contains("--get") || parsed.flags.contains("--get-element")
     let wantsAccessibilityWaitForElement = parsed.flags.contains("--wait-for-element")
     let setValueText = parsed.values["--set-value"]
@@ -2161,8 +2175,13 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         throw RegionShotError.invalidArguments("`--type` and `--key` cannot be combined with `--frontmost-window`, `--window-index`, or `--window-name`; keyboard input is posted to the selected app.")
     }
 
-    if (parsed.values["--depth"] != nil || parsed.values["--max-children"] != nil), !wantsElementList {
-        throw RegionShotError.invalidArguments("`--depth` and `--max-children` require `--list-elements`.")
+    let hasElementTreeOption = parsed.values["--depth"] != nil ||
+        parsed.values["--max-children"] != nil ||
+        parsed.values["--roles"] != nil ||
+        wantsElementTreeInteractiveOnly ||
+        wantsElementTreeFlat
+    if hasElementTreeOption, !wantsElementList {
+        throw RegionShotError.invalidArguments("`--depth`, `--max-children`, `--roles`, `--interactive`, and `--flat` require `--list-elements`.")
     }
 
     if wantsWindowList, windowSelection != nil {
@@ -2364,6 +2383,9 @@ func parse(arguments: [String]) throws -> CommandBehavior {
                 mode: accessibilityMode,
                 treeDepth: elementTreeDepth,
                 treeChildLimit: elementTreeChildLimit,
+                treeRoleFilter: elementTreeRoleFilter,
+                treeInteractiveOnly: wantsElementTreeInteractiveOnly,
+                treeFlat: wantsElementTreeFlat,
                 timeout: screenCaptureTimeout
             )
         )
@@ -2434,10 +2456,10 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         let argument = arguments[index]
 
         switch argument {
-        case "--help", "-h", "--version", "--doctor", "--list-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--get", "--get-element", "--wait-for-element", "--press", "--press-element", "--raise-window", "--raise", "--close-window", "--minimize-window", "--right", "--double", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only":
+        case "--help", "-h", "--version", "--doctor", "--list-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--interactive", "--flat", "--list-menu-bar-items", "--get", "--get-element", "--wait-for-element", "--press", "--press-element", "--raise-window", "--raise", "--close-window", "--minimize-window", "--right", "--double", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only":
             flags.insert(argument)
             index += 1
-        case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--wait-for-window", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--set-value", "--type", "--key", "--click", "--drag", "--scroll", "--move-window", "--resize-window", "--depth", "--max-children", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
+        case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--wait-for-window", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--set-value", "--type", "--key", "--click", "--drag", "--scroll", "--move-window", "--resize-window", "--depth", "--max-children", "--roles", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
             let valueIndex = index + 1
             guard valueIndex < arguments.count else {
                 throw RegionShotError.invalidArguments("Missing value for \(argument).")
@@ -3074,6 +3096,22 @@ func parseOCRLanguages(_ rawValue: String?) throws -> [String] {
     return languages
 }
 
+private func parseAccessibilityRoles(_ rawValue: String?) throws -> Set<String> {
+    guard let rawValue else {
+        return []
+    }
+
+    let roles = rawValue
+        .split(separator: ",", omittingEmptySubsequences: false)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    guard !roles.isEmpty, roles.allSatisfy({ !$0.isEmpty }) else {
+        throw RegionShotError.invalidArguments("`--roles` requires one or more comma-separated accessibility roles.")
+    }
+
+    return Set(roles)
+}
+
 private func parseAsciiDimension(
     _ rawValue: String?,
     flag: String,
@@ -3308,14 +3346,35 @@ private func inspectAccessibility(using command: AccessibilityCommand) async thr
         )
         return try encodeJSON(response)
     case .listElements:
+        let tree = accessibilityElementResponse(
+            for: accessibilityWindow,
+            depthRemaining: command.treeDepth,
+            childLimit: command.treeChildLimit,
+            path: "0"
+        )
+        let filteredTree = filteredAccessibilityTree(
+            tree,
+            roleFilter: command.treeRoleFilter,
+            interactiveOnly: command.treeInteractiveOnly
+        ) ?? replacingChildren(in: tree, with: tree.children == nil ? nil : [])
+
+        if command.treeFlat {
+            let response = AccessibilityFlatTreeResponse(
+                application: windowListApplication(for: catalog.application),
+                window: accessibilityWindowEntry(for: selectedWindow),
+                elements: flatAccessibilityElements(
+                    from: tree,
+                    roleFilter: command.treeRoleFilter,
+                    interactiveOnly: command.treeInteractiveOnly
+                )
+            )
+            return try encodeJSON(response)
+        }
+
         let response = AccessibilityTreeResponse(
             application: windowListApplication(for: catalog.application),
             window: accessibilityWindowEntry(for: selectedWindow),
-            tree: accessibilityElementResponse(
-                for: accessibilityWindow,
-                depthRemaining: command.treeDepth,
-                childLimit: command.treeChildLimit
-            )
+            tree: filteredTree
         )
         return try encodeJSON(response)
     case .elementAt(let point):
@@ -5393,17 +5452,26 @@ private func selectAccessibilityWindow(
 private func accessibilityElementResponse(
     for element: AXUIElement,
     depthRemaining: Int,
-    childLimit: Int = 25
+    childLimit: Int = 25,
+    path: String? = nil
 ) -> AccessibilityElementResponse {
     let children = copyAXElements(from: element, attribute: kAXChildrenAttribute as CFString)
     let shouldDescend = depthRemaining > 0
     let limitedChildren = shouldDescend ? Array(children.prefix(childLimit)) : []
     let childResponses = shouldDescend
-        ? limitedChildren.map { accessibilityElementResponse(for: $0, depthRemaining: depthRemaining - 1, childLimit: childLimit) }
+        ? limitedChildren.enumerated().map { index, child in
+            accessibilityElementResponse(
+                for: child,
+                depthRemaining: depthRemaining - 1,
+                childLimit: childLimit,
+                path: path.map { "\($0).\(index)" }
+            )
+        }
         : nil
     let truncated = (children.count > childLimit) || (depthRemaining == 0 && !children.isEmpty)
 
     return AccessibilityElementResponse(
+        path: path,
         role: copyAXString(from: element, attribute: kAXRoleAttribute as CFString),
         subrole: copyAXString(from: element, attribute: kAXSubroleAttribute as CFString),
         title: normalizedTitle(copyAXString(from: element, attribute: kAXTitleAttribute as CFString)),
@@ -5418,6 +5486,86 @@ private func accessibilityElementResponse(
         childCount: children.count,
         truncated: truncated ? true : nil,
         children: childResponses
+    )
+}
+
+private func filteredAccessibilityTree(
+    _ response: AccessibilityElementResponse,
+    roleFilter: Set<String>,
+    interactiveOnly: Bool,
+    keepRoot: Bool = true
+) -> AccessibilityElementResponse? {
+    let filteredChildren = response.children?.compactMap {
+        filteredAccessibilityTree(
+            $0,
+            roleFilter: roleFilter,
+            interactiveOnly: interactiveOnly,
+            keepRoot: false
+        )
+    }
+    let hasMatchingChild = !(filteredChildren?.isEmpty ?? true)
+    let matches = accessibilityElementMatchesTreeFilter(
+        response,
+        roleFilter: roleFilter,
+        interactiveOnly: interactiveOnly
+    )
+
+    guard keepRoot || matches || hasMatchingChild else {
+        return nil
+    }
+
+    return replacingChildren(
+        in: response,
+        with: response.children == nil ? nil : filteredChildren
+    )
+}
+
+private func flatAccessibilityElements(
+    from response: AccessibilityElementResponse,
+    roleFilter: Set<String>,
+    interactiveOnly: Bool
+) -> [AccessibilityElementResponse] {
+    let current = accessibilityElementMatchesTreeFilter(
+        response,
+        roleFilter: roleFilter,
+        interactiveOnly: interactiveOnly
+    ) ? [replacingChildren(in: response, with: nil)] : []
+    let descendants = response.children?.flatMap {
+        flatAccessibilityElements(from: $0, roleFilter: roleFilter, interactiveOnly: interactiveOnly)
+    } ?? []
+    return current + descendants
+}
+
+private func accessibilityElementMatchesTreeFilter(
+    _ response: AccessibilityElementResponse,
+    roleFilter: Set<String>,
+    interactiveOnly: Bool
+) -> Bool {
+    let roleMatches = roleFilter.isEmpty || response.role.map(roleFilter.contains) == true
+    let interactiveMatches = !interactiveOnly || !response.actions.isEmpty
+    return roleMatches && interactiveMatches
+}
+
+private func replacingChildren(
+    in response: AccessibilityElementResponse,
+    with children: [AccessibilityElementResponse]?
+) -> AccessibilityElementResponse {
+    AccessibilityElementResponse(
+        path: response.path,
+        role: response.role,
+        subrole: response.subrole,
+        title: response.title,
+        description: response.description,
+        identifier: response.identifier,
+        value: response.value,
+        enabled: response.enabled,
+        focused: response.focused,
+        selected: response.selected,
+        frame: response.frame,
+        actions: response.actions,
+        childCount: response.childCount,
+        truncated: response.truncated,
+        children: children
     )
 }
 
