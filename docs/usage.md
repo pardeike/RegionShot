@@ -193,7 +193,7 @@ Use `--depth N` and `--max-children N` with `--list-elements` to reduce or
 expand the tree. Use `--roles ROLE[,ROLE...]` to keep only matching roles and
 their ancestors, `--interactive` to keep elements with actions and their
 ancestors, and `--flat` to return a flat `elements` array instead of a nested
-tree.
+tree. Empty `actions` arrays are omitted from element JSON.
 Use `--path PATH` with `--get`, `--wait-for-element`, `--set-value`, or `--press`
 to target a listed element directly. Paths cannot be combined with fuzzy selector
 fields such as `--role` or `--title`.

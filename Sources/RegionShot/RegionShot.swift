@@ -881,7 +881,7 @@ struct AccessibilityElementResponse: Encodable {
     let focused: Bool?
     let selected: Bool?
     let frame: JSONRect?
-    let actions: [String]
+    let actions: [String]?
     let childCount: Int?
     let truncated: Bool?
     let children: [AccessibilityElementResponse]?
@@ -1181,6 +1181,7 @@ Rules:
   `--title`, `--identifier`, and `--description` prefer exact matches, then fall back to case-insensitive contains
   `--list-elements` accepts `--depth` 0...12, `--max-children` 1...200, `--roles`, `--interactive`, and `--flat`
   list-elements responses include stable `path` strings such as `0.3.1` for each returned element
+  element `actions` arrays are emitted only when non-empty
   use `--path PATH` to target a listed element directly; it cannot be combined with fuzzy selector fields
   capture and ScreenCaptureKit window listing require Screen Recording permission
   accessibility inspection and actions require Accessibility permission
@@ -5517,6 +5518,7 @@ private func accessibilityElementResponse(
         }
         : nil
     let truncated = (children.count > childLimit) || (depthRemaining == 0 && !children.isEmpty)
+    let actions = copyAXActions(from: element)
 
     return AccessibilityElementResponse(
         path: path,
@@ -5530,7 +5532,7 @@ private func accessibilityElementResponse(
         focused: copyAXBool(from: element, attribute: kAXFocusedAttribute as CFString),
         selected: copyAXBool(from: element, attribute: kAXSelectedAttribute as CFString),
         frame: copyAXFrame(from: element).map(JSONRect.init),
-        actions: copyAXActions(from: element),
+        actions: actions.isEmpty ? nil : actions,
         childCount: children.count,
         truncated: truncated ? true : nil,
         children: childResponses
@@ -5590,7 +5592,7 @@ private func accessibilityElementMatchesTreeFilter(
     interactiveOnly: Bool
 ) -> Bool {
     let roleMatches = roleFilter.isEmpty || response.role.map(roleFilter.contains) == true
-    let interactiveMatches = !interactiveOnly || !response.actions.isEmpty
+    let interactiveMatches = !interactiveOnly || !(response.actions ?? []).isEmpty
     return roleMatches && interactiveMatches
 }
 
