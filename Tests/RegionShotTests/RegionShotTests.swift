@@ -23,6 +23,16 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
+    func testPassiveCommandsDoNotSynchronizeCodexIntegration() throws {
+        XCTAssertFalse(try parse(arguments: []).shouldSynchronizeCodexIntegration)
+        XCTAssertFalse(try parse(arguments: ["--help"]).shouldSynchronizeCodexIntegration)
+        XCTAssertFalse(try parse(arguments: ["--version"]).shouldSynchronizeCodexIntegration)
+    }
+
+    func testOperationalCommandsSynchronizeCodexIntegration() throws {
+        XCTAssertTrue(try parse(arguments: ["--find-app", "RimWorld"]).shouldSynchronizeCodexIntegration)
+    }
+
     func testAsciiArtParsing() throws {
         let behavior = try parse(arguments: [
             "--ascii", "/tmp/screenshot.png",

@@ -11,10 +11,11 @@ import UniformTypeIdentifiers
 @main
 struct RegionShot {
     static func main() async {
-        synchronizeCodexIntegrationIfAvailable()
-
         do {
             let behavior = try parse(arguments: Array(CommandLine.arguments.dropFirst()))
+            if behavior.shouldSynchronizeCodexIntegration {
+                synchronizeCodexIntegrationIfAvailable()
+            }
 
             switch behavior {
             case .showHelp:
@@ -68,6 +69,15 @@ enum CommandBehavior: Sendable {
     case listVisibleWindows(VisibleWindowsCommand)
     case inspectAccessibility(AccessibilityCommand)
     case menuBar(MenuBarCommand)
+
+    var shouldSynchronizeCodexIntegration: Bool {
+        switch self {
+        case .showHelp, .showVersion:
+            return false
+        case .findApps, .asciiArt, .capture, .captureVisibleWindow, .listWindows, .listVisibleWindows, .inspectAccessibility, .menuBar:
+            return true
+        }
+    }
 }
 
 struct CaptureCommand: Sendable {
