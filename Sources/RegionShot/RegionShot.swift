@@ -34,6 +34,9 @@ struct RegionShot {
             case .activateApplication(let command):
                 let json = try activate(using: command)
                 print(json)
+            case .quitApplication(let command):
+                let json = try quit(using: command)
+                print(json)
             case .findApps(let command):
                 let json = try findApps(using: command)
                 print(json)
@@ -77,6 +80,7 @@ enum CommandBehavior: Sendable {
     case clipboard(ClipboardCommand)
     case listDisplays
     case activateApplication(ActivateApplicationCommand)
+    case quitApplication(QuitApplicationCommand)
     case findApps(FindAppsCommand)
     case asciiArt(AsciiArtCommand)
     case capture(CaptureCommand)
@@ -90,7 +94,7 @@ enum CommandBehavior: Sendable {
         switch self {
         case .showHelp, .showVersion, .doctor, .clipboard, .listDisplays:
             return false
-        case .activateApplication, .findApps, .asciiArt, .capture, .captureVisibleWindow, .listWindows, .listVisibleWindows, .inspectAccessibility, .menuBar:
+        case .activateApplication, .quitApplication, .findApps, .asciiArt, .capture, .captureVisibleWindow, .listWindows, .listVisibleWindows, .inspectAccessibility, .menuBar:
             return true
         }
     }
@@ -98,6 +102,11 @@ enum CommandBehavior: Sendable {
 
 struct ActivateApplicationCommand: Sendable {
     let applicationSelector: ApplicationSelector
+}
+
+struct QuitApplicationCommand: Sendable {
+    let applicationSelector: ApplicationSelector
+    let force: Bool
 }
 
 struct CaptureCommand: Sendable {
@@ -447,6 +456,12 @@ struct DisplayEntry: Encodable {
 private struct ActivateApplicationResponse: Encodable {
     let application: WindowListApplication
     let activationRequestAccepted: Bool
+}
+
+private struct QuitApplicationResponse: Encodable {
+    let application: WindowListApplication
+    let force: Bool
+    let terminationRequestAccepted: Bool
 }
 
 private struct RunningApplicationEntry: Encodable {
@@ -813,6 +828,7 @@ Forms:
   regionshot doctor
   regionshot clipboard [--set TEXT]
   regionshot activate --app APP
+  regionshot quit --app APP [--force]
   regionshot --find-app TEXT
   regionshot --list-displays
   regionshot --ascii IMAGE [--ascii-style layout|tone] [--ascii-width N] [--ascii-max-height N] [--ascii-language CODE[,CODE...]] [--ascii-invert] [--ascii-no-ocr] [--ocr-only]
@@ -870,6 +886,7 @@ Rules:
   `doctor` prints non-prompting permission, version, and host-process JSON
   `clipboard` reads or sets plain text on the general pasteboard and prints JSON
   `activate --app APP` asks macOS to activate a running app and prints JSON
+  `quit --app APP` asks a running app to terminate; add `--force` to force-terminate
   `--list-displays` prints active display ids, point frames, pixel sizes, scale, and main-display status as JSON
   `--app` accepts app name, bundle id, or pid; pure integers are treated as pids for compatibility
   use `--pid PID` to select by process id, or `--app-name NAME` to force name/bundle matching for numeric app names
@@ -1090,6 +1107,22 @@ func activate(using command: ActivateApplicationCommand) throws -> String {
         ActivateApplicationResponse(
             application: windowListApplication(for: application),
             activationRequestAccepted: accepted
+        )
+    )
+}
+
+func quit(using command: QuitApplicationCommand) throws -> String {
+    let application = try resolveAutomationApplication(selector: command.applicationSelector)
+    let runningApplication = NSRunningApplication(processIdentifier: application.processID)
+    let accepted = command.force
+        ? (runningApplication?.forceTerminate() ?? false)
+        : (runningApplication?.terminate() ?? false)
+
+    return try encodeJSON(
+        QuitApplicationResponse(
+            application: windowListApplication(for: application),
+            force: command.force,
+            terminationRequestAccepted: accepted
         )
     )
 }
@@ -1454,6 +1487,10 @@ func parse(arguments: [String]) throws -> CommandBehavior {
 
     if arguments.first == "activate" {
         return .activateApplication(try parseActivateApplicationCommand(arguments: Array(arguments.dropFirst())))
+    }
+
+    if arguments.first == "quit" {
+        return .quitApplication(try parseQuitApplicationCommand(arguments: Array(arguments.dropFirst())))
     }
 
     let parsed = try parseRawArguments(arguments)
@@ -2024,6 +2061,34 @@ func parseActivateApplicationCommand(arguments: [String]) throws -> ActivateAppl
     }
 
     return ActivateApplicationCommand(applicationSelector: applicationSelector)
+}
+
+func parseQuitApplicationCommand(arguments: [String]) throws -> QuitApplicationCommand {
+    var force = false
+    var filteredArguments: [String] = []
+    filteredArguments.reserveCapacity(arguments.count)
+
+    for argument in arguments {
+        if argument == "--force" {
+            force = true
+        } else {
+            filteredArguments.append(argument)
+        }
+    }
+
+    let parsed = try parseRawArguments(filteredArguments)
+    let allowedValueKeys: Set<String> = ["--app", "--app-name", "--pid"]
+    let hasOtherValue = parsed.values.keys.contains { !allowedValueKeys.contains($0) }
+
+    if parsed.region != nil || hasOtherValue || !parsed.flags.isEmpty {
+        throw RegionShotError.invalidArguments("`quit` accepts only an app selector (`--app`, `--app-name`, or `--pid`) and optional `--force`.")
+    }
+
+    guard let applicationSelector = try parseApplicationSelector(values: parsed.values) else {
+        throw RegionShotError.invalidArguments("`quit` requires an app selector (`--app`, `--app-name`, or `--pid`).")
+    }
+
+    return QuitApplicationCommand(applicationSelector: applicationSelector, force: force)
 }
 
 func parseApplicationSelector(values: [String: String]) throws -> ApplicationSelector? {

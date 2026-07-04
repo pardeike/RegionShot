@@ -116,6 +116,53 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
+    func testQuitApplicationParsing() throws {
+        let behavior = try parse(arguments: ["quit", "--app", "Terminal"])
+
+        guard case .quitApplication(let command) = behavior else {
+            return XCTFail("Expected quit application behavior.")
+        }
+
+        guard case .name(let name) = command.applicationSelector else {
+            return XCTFail("Expected name application selector.")
+        }
+
+        XCTAssertEqual(name, "Terminal")
+        XCTAssertFalse(command.force)
+    }
+
+    func testQuitApplicationParsingSupportsForceAndPID() throws {
+        let behavior = try parse(arguments: ["quit", "--pid", "123", "--force"])
+
+        guard case .quitApplication(let command) = behavior else {
+            return XCTFail("Expected quit application behavior.")
+        }
+
+        guard case .processID(let processID) = command.applicationSelector else {
+            return XCTFail("Expected pid application selector.")
+        }
+
+        XCTAssertEqual(processID, 123)
+        XCTAssertTrue(command.force)
+    }
+
+    func testQuitApplicationRejectsMissingSelector() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["quit", "--force"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("quit"))
+            XCTAssertTrue(String(describing: error).contains("--app"))
+        }
+    }
+
+    func testQuitApplicationRejectsMixedArguments() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["quit", "--app", "Terminal", "--list-windows"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("quit"))
+        }
+    }
+
     func testListDisplaysParsing() throws {
         let behavior = try parse(arguments: ["--list-displays"])
 
@@ -144,6 +191,7 @@ final class RegionShotTests: XCTestCase {
     func testOperationalCommandsSynchronizeCodexIntegration() throws {
         XCTAssertTrue(try parse(arguments: ["--find-app", "RimWorld"]).shouldSynchronizeCodexIntegration)
         XCTAssertTrue(try parse(arguments: ["activate", "--app", "Terminal"]).shouldSynchronizeCodexIntegration)
+        XCTAssertTrue(try parse(arguments: ["quit", "--app", "Terminal"]).shouldSynchronizeCodexIntegration)
     }
 
     func testAsciiArtParsing() throws {

@@ -33,11 +33,17 @@ regionshot clipboard --set "copied text"
 ```bash
 regionshot activate --app "System Settings"
 regionshot activate --pid 12345
+regionshot quit --app "My Debug App"
+regionshot quit --pid 12345 --force
 ```
 
 `activate` resolves a running app by name, bundle id, or process id, asks macOS
 to activate it, and prints JSON describing the app and whether macOS accepted the
 activation request.
+
+`quit` resolves a running app and asks it to terminate. Add `--force` to call
+force-terminate instead. The command prints JSON describing the app and whether
+macOS accepted the termination request.
 
 ## Displays
 
