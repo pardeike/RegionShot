@@ -236,6 +236,27 @@ struct WindowPoint: Sendable {
     }
 }
 
+struct WindowDrag: Sendable {
+    let start: WindowPoint
+    let end: WindowPoint
+}
+
+struct ScrollDelta: Sendable {
+    let x: Int32
+    let y: Int32
+}
+
+struct MouseClick: Sendable {
+    let point: WindowPoint
+    let button: MouseButton
+    let clickCount: Int
+}
+
+enum MouseButton: String, Sendable {
+    case left
+    case right
+}
+
 struct WindowPosition: Sendable {
     let x: Int
     let y: Int
@@ -390,6 +411,9 @@ enum AccessibilityMode: Sendable {
     case setValue(AccessibilitySelector, String)
     case typeText(String)
     case keyChord(KeyChord)
+    case click(MouseClick)
+    case drag(WindowDrag)
+    case scroll(ScrollDelta)
     case pressAt(WindowPoint)
     case pressElement(AccessibilitySelector)
     case raiseWindow
@@ -760,6 +784,22 @@ private struct AccessibilityPressResponse: Encodable {
     let ancestors: [AccessibilityElementResponse]
 }
 
+private struct MouseActionResponse: Encodable {
+    let application: WindowListApplication
+    let window: AccessibilityWindowEntry
+    let mode: String
+    let button: String?
+    let clickCount: Int?
+    let point: JSONPoint?
+    let screenPoint: JSONPoint?
+    let endPoint: JSONPoint?
+    let screenEndPoint: JSONPoint?
+    let deltaX: Int32?
+    let deltaY: Int32?
+    let activationRequestAccepted: Bool
+    let windowRaiseAttempted: Bool
+}
+
 private struct AccessibilityRaiseWindowResponse: Encodable {
     let application: WindowListApplication
     let frontmostApplication: WindowListApplication?
@@ -1042,6 +1082,9 @@ Forms:
   regionshot --app APP --set-value TEXT --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
   regionshot --app APP --type TEXT
   regionshot --app APP --key CHORD
+  regionshot --app APP --click X,Y [--right] [--double]
+  regionshot --app APP --drag X1,Y1,X2,Y2
+  regionshot --app APP --scroll DX,DY
   regionshot --app APP --press --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
   regionshot --app APP --press-at X,Y
   regionshot --app APP --element-at X,Y
@@ -1109,6 +1152,7 @@ Rules:
   `--wait-for-element` polls until one matching accessibility element appears, using `--timeout SECONDS`
   `--set-value TEXT` writes AXValue on one matching accessibility element and returns the updated element
   `--type TEXT` posts Unicode keyboard input to the app; `--key CHORD` posts shortcuts like `cmd+s`
+  `--click`, `--drag`, and `--scroll` post CGEvent mouse input to the selected window after activating it
   `--title`, `--identifier`, and `--description` prefer exact matches, then fall back to case-insensitive contains
   `--list-elements` accepts `--depth` 0...12 and `--max-children` 1...200
   capture and ScreenCaptureKit window listing require Screen Recording permission
@@ -1868,6 +1912,11 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     let wantsMinimizeWindow = parsed.flags.contains("--minimize-window")
     let windowPosition = try parseWindowPosition(parsed.values["--move-window"], flag: "--move-window")
     let windowSize = try parseWindowSize(parsed.values["--resize-window"], flag: "--resize-window")
+    let clickPoint = try parseWindowPoint(parsed.values["--click"], flag: "--click")
+    let drag = try parseWindowDrag(parsed.values["--drag"], flag: "--drag")
+    let scrollDelta = try parseScrollDelta(parsed.values["--scroll"], flag: "--scroll")
+    let wantsRightClick = parsed.flags.contains("--right")
+    let wantsDoubleClick = parsed.flags.contains("--double")
     let elementPoint = try parseWindowPoint(parsed.values["--element-at"], flag: "--element-at")
     let pressPoint = try parseWindowPoint(parsed.values["--press-at"], flag: "--press-at")
     let selector = parseAccessibilitySelector(from: parsed.values)
@@ -1906,6 +1955,10 @@ func parse(arguments: [String]) throws -> CommandBehavior {
 
     if wantsAccessibilityTypeText, normalizedArgumentValue(typeText) == nil {
         throw RegionShotError.invalidArguments("`--type` requires non-empty text.")
+    }
+
+    if (wantsRightClick || wantsDoubleClick), clickPoint == nil {
+        throw RegionShotError.invalidArguments("`--right` and `--double` require `--click X,Y`.")
     }
 
     if let asciiImagePath {
@@ -1971,6 +2024,9 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     if wantsAccessibilitySetValue { accessibilityModeCount += 1 }
     if wantsAccessibilityTypeText { accessibilityModeCount += 1 }
     if wantsAccessibilityKeyChord { accessibilityModeCount += 1 }
+    if clickPoint != nil { accessibilityModeCount += 1 }
+    if drag != nil { accessibilityModeCount += 1 }
+    if scrollDelta != nil { accessibilityModeCount += 1 }
     if wantsAccessibilityPress { accessibilityModeCount += 1 }
     if pressPoint != nil { accessibilityModeCount += 1 }
     if wantsRaiseWindow { accessibilityModeCount += 1 }
@@ -1980,7 +2036,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     if windowSize != nil { accessibilityModeCount += 1 }
 
     if accessibilityModeCount > 1 {
-        throw RegionShotError.invalidArguments("Choose only one of `--list-accessibility-windows`, `--list-elements`, `--element-at`, `--wait-for-window`, `--get`/`--get-element`, `--wait-for-element`, `--set-value`, `--type`, `--key`, `--press`/`--press-element`, `--press-at`, `--raise-window`, `--close-window`, `--minimize-window`, `--move-window`, or `--resize-window`.")
+        throw RegionShotError.invalidArguments("Choose only one of `--list-accessibility-windows`, `--list-elements`, `--element-at`, `--wait-for-window`, `--get`/`--get-element`, `--wait-for-element`, `--set-value`, `--type`, `--key`, `--click`, `--drag`, `--scroll`, `--press`/`--press-element`, `--press-at`, `--raise-window`, `--close-window`, `--minimize-window`, `--move-window`, or `--resize-window`.")
     }
 
     let menuBarModeCount = [
@@ -2022,6 +2078,18 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         accessibilityMode = .typeText(typeText)
     } else if let keyChord {
         accessibilityMode = .keyChord(keyChord)
+    } else if let clickPoint {
+        accessibilityMode = .click(
+            MouseClick(
+                point: clickPoint,
+                button: wantsRightClick ? .right : .left,
+                clickCount: wantsDoubleClick ? 2 : 1
+            )
+        )
+    } else if let drag {
+        accessibilityMode = .drag(drag)
+    } else if let scrollDelta {
+        accessibilityMode = .scroll(scrollDelta)
     } else if wantsAccessibilityPress {
         accessibilityMode = .pressElement(selector)
     } else if let pressPoint {
@@ -2366,10 +2434,10 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         let argument = arguments[index]
 
         switch argument {
-        case "--help", "-h", "--version", "--doctor", "--list-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--get", "--get-element", "--wait-for-element", "--press", "--press-element", "--raise-window", "--raise", "--close-window", "--minimize-window", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only":
+        case "--help", "-h", "--version", "--doctor", "--list-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--get", "--get-element", "--wait-for-element", "--press", "--press-element", "--raise-window", "--raise", "--close-window", "--minimize-window", "--right", "--double", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only":
             flags.insert(argument)
             index += 1
-        case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--wait-for-window", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--set-value", "--type", "--key", "--move-window", "--resize-window", "--depth", "--max-children", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
+        case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--wait-for-window", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--set-value", "--type", "--key", "--click", "--drag", "--scroll", "--move-window", "--resize-window", "--depth", "--max-children", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
             let valueIndex = index + 1
             guard valueIndex < arguments.count else {
                 throw RegionShotError.invalidArguments("Missing value for \(argument).")
@@ -2682,6 +2750,62 @@ private func parseWindowPoint(_ rawValue: String?, flag: String) throws -> Windo
     }
 
     return point
+}
+
+private func parseWindowDrag(_ rawValue: String?, flag: String) throws -> WindowDrag? {
+    guard let rawValue else {
+        return nil
+    }
+
+    let components = rawValue
+        .split(separator: ",", omittingEmptySubsequences: false)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    guard components.count == 4 else {
+        throw RegionShotError.invalidArguments("`\(flag)` must use `x1,y1,x2,y2`.")
+    }
+
+    let start = try WindowPoint(
+        x: parseInteger(components[0], flag: flag),
+        y: parseInteger(components[1], flag: flag)
+    )
+    let end = try WindowPoint(
+        x: parseInteger(components[2], flag: flag),
+        y: parseInteger(components[3], flag: flag)
+    )
+
+    guard start.x >= 0, start.y >= 0, end.x >= 0, end.y >= 0 else {
+        throw RegionShotError.invalidArguments("`\(flag)` requires non-negative window coordinates.")
+    }
+
+    return WindowDrag(start: start, end: end)
+}
+
+private func parseScrollDelta(_ rawValue: String?, flag: String) throws -> ScrollDelta? {
+    guard let rawValue else {
+        return nil
+    }
+
+    let components = rawValue
+        .split(separator: ",", omittingEmptySubsequences: false)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    guard components.count == 2 else {
+        throw RegionShotError.invalidArguments("`\(flag)` must use `dx,dy`.")
+    }
+
+    let x = try parseInteger(components[0], flag: flag)
+    let y = try parseInteger(components[1], flag: flag)
+
+    guard x != 0 || y != 0 else {
+        throw RegionShotError.invalidArguments("`\(flag)` requires a non-zero x or y delta.")
+    }
+
+    guard let deltaX = Int32(exactly: x), let deltaY = Int32(exactly: y) else {
+        throw RegionShotError.invalidArguments("`\(flag)` deltas must fit in a 32-bit signed integer.")
+    }
+
+    return ScrollDelta(x: deltaX, y: deltaY)
 }
 
 private func parseWindowPosition(_ rawValue: String?, flag: String) throws -> WindowPosition? {
@@ -3261,6 +3385,71 @@ private func inspectAccessibility(using command: AccessibilityCommand) async thr
             selector: accessibilitySelectorResponse(for: selector),
             matched: accessibilityElementResponse(for: selectedElement.element, depthRemaining: 1),
             ancestors: accessibilityAncestorResponses(for: selectedElement.element, stoppingAt: accessibilityWindow)
+        )
+        return try encodeJSON(response)
+    case .click(let click):
+        try validate(windowPoint: click.point, within: selectedWindow.frame, windowTitle: displayTitle(selectedWindow.title), flag: "--click")
+        let screenPoint = screenPoint(for: click.point, in: selectedWindow.frame)
+        let preparation = try await prepareForMouseInput(application: catalog.application, window: accessibilityWindow)
+        try postMouseClick(click, at: screenPoint)
+        let response = MouseActionResponse(
+            application: windowListApplication(for: catalog.application),
+            window: accessibilityWindowEntry(for: selectedWindow),
+            mode: "click",
+            button: click.button.rawValue,
+            clickCount: click.clickCount,
+            point: JSONPoint(click.point.point),
+            screenPoint: JSONPoint(screenPoint),
+            endPoint: nil,
+            screenEndPoint: nil,
+            deltaX: nil,
+            deltaY: nil,
+            activationRequestAccepted: preparation.activationRequestAccepted,
+            windowRaiseAttempted: preparation.windowRaiseAttempted
+        )
+        return try encodeJSON(response)
+    case .drag(let drag):
+        try validate(windowPoint: drag.start, within: selectedWindow.frame, windowTitle: displayTitle(selectedWindow.title), flag: "--drag")
+        try validate(windowPoint: drag.end, within: selectedWindow.frame, windowTitle: displayTitle(selectedWindow.title), flag: "--drag")
+        let startScreenPoint = screenPoint(for: drag.start, in: selectedWindow.frame)
+        let endScreenPoint = screenPoint(for: drag.end, in: selectedWindow.frame)
+        let preparation = try await prepareForMouseInput(application: catalog.application, window: accessibilityWindow)
+        try postMouseDrag(from: startScreenPoint, to: endScreenPoint)
+        let response = MouseActionResponse(
+            application: windowListApplication(for: catalog.application),
+            window: accessibilityWindowEntry(for: selectedWindow),
+            mode: "drag",
+            button: MouseButton.left.rawValue,
+            clickCount: nil,
+            point: JSONPoint(drag.start.point),
+            screenPoint: JSONPoint(startScreenPoint),
+            endPoint: JSONPoint(drag.end.point),
+            screenEndPoint: JSONPoint(endScreenPoint),
+            deltaX: nil,
+            deltaY: nil,
+            activationRequestAccepted: preparation.activationRequestAccepted,
+            windowRaiseAttempted: preparation.windowRaiseAttempted
+        )
+        return try encodeJSON(response)
+    case .scroll(let delta):
+        let point = centerPoint(in: selectedWindow.frame)
+        let screenPoint = screenPoint(for: point, in: selectedWindow.frame)
+        let preparation = try await prepareForMouseInput(application: catalog.application, window: accessibilityWindow)
+        try postScroll(delta, at: screenPoint)
+        let response = MouseActionResponse(
+            application: windowListApplication(for: catalog.application),
+            window: accessibilityWindowEntry(for: selectedWindow),
+            mode: "scroll",
+            button: nil,
+            clickCount: nil,
+            point: JSONPoint(point.point),
+            screenPoint: JSONPoint(screenPoint),
+            endPoint: nil,
+            screenEndPoint: nil,
+            deltaX: delta.x,
+            deltaY: delta.y,
+            activationRequestAccepted: preparation.activationRequestAccepted,
+            windowRaiseAttempted: preparation.windowRaiseAttempted
         )
         return try encodeJSON(response)
     case .pressAt(let point):
@@ -5860,6 +6049,124 @@ private func waitForWindowToClose(
     } while Date() < deadline
 
     return false
+}
+
+private func prepareForMouseInput(
+    application: AutomationApplication,
+    window: AXUIElement
+) async throws -> (activationRequestAccepted: Bool, windowRaiseAttempted: Bool) {
+    let activationRequestAccepted = activateApplication(application)
+    var windowRaiseAttempted = false
+
+    if supportsAXAction(window, action: kAXRaiseAction as String) {
+        windowRaiseAttempted = true
+        try performRaise(on: window)
+    }
+
+    try await Task.sleep(nanoseconds: 100_000_000)
+    return (activationRequestAccepted, windowRaiseAttempted)
+}
+
+private func screenPoint(for point: WindowPoint, in windowFrame: CGRect) -> CGPoint {
+    CGPoint(
+        x: windowFrame.minX + CGFloat(point.x),
+        y: windowFrame.minY + CGFloat(point.y)
+    )
+}
+
+private func centerPoint(in windowFrame: CGRect) -> WindowPoint {
+    WindowPoint(
+        x: max(0, Int((windowFrame.width / 2).rounded(.down))),
+        y: max(0, Int((windowFrame.height / 2).rounded(.down)))
+    )
+}
+
+private func postMouseClick(_ click: MouseClick, at screenPoint: CGPoint) throws {
+    guard let source = CGEventSource(stateID: .privateState) else {
+        throw RegionShotError.accessibilityQueryFailed("Failed to create a mouse event source.")
+    }
+
+    let downType: CGEventType = click.button == .right ? .rightMouseDown : .leftMouseDown
+    let upType: CGEventType = click.button == .right ? .rightMouseUp : .leftMouseUp
+    let button: CGMouseButton = click.button == .right ? .right : .left
+
+    for clickIndex in 1...click.clickCount {
+        try postMouseEvent(
+            type: downType,
+            at: screenPoint,
+            button: button,
+            clickState: clickIndex,
+            source: source
+        )
+        try postMouseEvent(
+            type: upType,
+            at: screenPoint,
+            button: button,
+            clickState: clickIndex,
+            source: source
+        )
+    }
+}
+
+private func postMouseDrag(from startPoint: CGPoint, to endPoint: CGPoint) throws {
+    guard let source = CGEventSource(stateID: .privateState) else {
+        throw RegionShotError.accessibilityQueryFailed("Failed to create a mouse event source.")
+    }
+
+    try postMouseEvent(type: .leftMouseDown, at: startPoint, button: .left, clickState: 1, source: source)
+
+    let distance = hypot(endPoint.x - startPoint.x, endPoint.y - startPoint.y)
+    let stepCount = max(1, min(24, Int(distance / 24)))
+    for step in 1...stepCount {
+        let progress = CGFloat(step) / CGFloat(stepCount)
+        let point = CGPoint(
+            x: startPoint.x + ((endPoint.x - startPoint.x) * progress),
+            y: startPoint.y + ((endPoint.y - startPoint.y) * progress)
+        )
+        try postMouseEvent(type: .leftMouseDragged, at: point, button: .left, clickState: 1, source: source)
+    }
+
+    try postMouseEvent(type: .leftMouseUp, at: endPoint, button: .left, clickState: 1, source: source)
+}
+
+private func postMouseEvent(
+    type: CGEventType,
+    at screenPoint: CGPoint,
+    button: CGMouseButton,
+    clickState: Int,
+    source: CGEventSource
+) throws {
+    guard let event = CGEvent(
+        mouseEventSource: source,
+        mouseType: type,
+        mouseCursorPosition: screenPoint,
+        mouseButton: button
+    ) else {
+        throw RegionShotError.accessibilityQueryFailed("Failed to create mouse event.")
+    }
+
+    event.setIntegerValueField(.mouseEventClickState, value: Int64(clickState))
+    event.post(tap: .cgSessionEventTap)
+    Thread.sleep(forTimeInterval: 0.01)
+}
+
+private func postScroll(_ delta: ScrollDelta, at screenPoint: CGPoint) throws {
+    guard
+        let source = CGEventSource(stateID: .privateState),
+        let event = CGEvent(
+            scrollWheelEvent2Source: source,
+            units: .pixel,
+            wheelCount: 2,
+            wheel1: delta.y,
+            wheel2: delta.x,
+            wheel3: 0
+        )
+    else {
+        throw RegionShotError.accessibilityQueryFailed("Failed to create scroll event.")
+    }
+
+    event.location = screenPoint
+    event.post(tap: .cgSessionEventTap)
 }
 
 private func postText(_ text: String, to processID: pid_t) throws {

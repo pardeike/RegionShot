@@ -812,6 +812,87 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
+    func testAccessibilityMouseClickParsing() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--click", "12,34",
+            "--right",
+            "--double",
+        ])
+
+        guard case .inspectAccessibility(let command) = behavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .click(let click) = command.mode else {
+            return XCTFail("Expected mouse click mode.")
+        }
+
+        XCTAssertEqual(click.point.x, 12)
+        XCTAssertEqual(click.point.y, 34)
+        XCTAssertEqual(click.button, .right)
+        XCTAssertEqual(click.clickCount, 2)
+    }
+
+    func testAccessibilityMouseDragAndScrollParsing() throws {
+        let dragBehavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--drag", "10,20,30,40",
+        ])
+
+        guard case .inspectAccessibility(let dragCommand) = dragBehavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .drag(let drag) = dragCommand.mode else {
+            return XCTFail("Expected mouse drag mode.")
+        }
+
+        XCTAssertEqual(drag.start.x, 10)
+        XCTAssertEqual(drag.start.y, 20)
+        XCTAssertEqual(drag.end.x, 30)
+        XCTAssertEqual(drag.end.y, 40)
+
+        let scrollBehavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--scroll", "-5,12",
+        ])
+
+        guard case .inspectAccessibility(let scrollCommand) = scrollBehavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .scroll(let delta) = scrollCommand.mode else {
+            return XCTFail("Expected mouse scroll mode.")
+        }
+
+        XCTAssertEqual(delta.x, -5)
+        XCTAssertEqual(delta.y, 12)
+    }
+
+    func testAccessibilityMouseActionsRejectInvalidCombinations() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--right"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--right"))
+            XCTAssertTrue(String(describing: error).contains("--click"))
+        }
+
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--click", "1,2", "--drag", "1,2,3,4"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--click"))
+            XCTAssertTrue(String(describing: error).contains("--drag"))
+        }
+
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--scroll", "0,0"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--scroll"))
+            XCTAssertTrue(String(describing: error).contains("non-zero"))
+        }
+    }
+
     func testAccessibilityGetElementRequiresSelector() {
         XCTAssertThrowsError(
             try parse(arguments: ["--app", "Terminal", "--get"])

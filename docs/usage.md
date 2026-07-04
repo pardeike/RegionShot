@@ -171,6 +171,10 @@ regionshot --app "System Settings" --wait-for-element --role AXButton --title Do
 regionshot --app "System Settings" --set-value "Andreas" --role AXTextField --title Name
 regionshot --app "System Settings" --type "typed text"
 regionshot --app "System Settings" --key "cmd+s"
+regionshot --app "System Settings" --click 24,24
+regionshot --app "System Settings" --click 24,24 --right
+regionshot --app "System Settings" --drag 24,24,160,24
+regionshot --app "System Settings" --scroll 0,-800
 regionshot --app "System Settings" --press --role AXButton --title Done
 regionshot --app "System Settings" --press-at 14,14
 regionshot --app "System Settings" --element-at 14,14
@@ -204,6 +208,11 @@ can be used to clear text fields that support `AXValue` writes.
 `--type TEXT` activates the app and posts Unicode keyboard input to its process.
 `--key CHORD` posts a shortcut or named key such as `cmd+s`, `cmd+shift+s`,
 `escape`, or `return`.
+
+`--click X,Y`, `--drag X1,Y1,X2,Y2`, and `--scroll DX,DY` activate the app,
+raise the selected window when supported, and post CGEvent mouse input. Click and
+drag coordinates are window-relative points. Scroll is posted at the selected
+window's center point and accepts signed horizontal/vertical deltas.
 
 `--press` finds a pressable accessibility element using selector fields such as
 `--role`, `--subrole`, `--title`, `--identifier`, and `--description`, then
