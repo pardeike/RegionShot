@@ -262,6 +262,7 @@ regionshot --app "Terminal" --list-accessibility-windows
 regionshot --app "Terminal" --window-index 0 --raise-window
 regionshot --app "Terminal" --window-name "server logs" --raise-window
 regionshot --app "Terminal" --window-name "server logs" --raise
+regionshot --app "Terminal" --window-name "server logs" --close-window
 ```
 
 `--list-accessibility-windows` lists windows through Accessibility instead of
@@ -278,6 +279,9 @@ main window, then index 0.
 window. Select the window with `--window-index`, `--window-name`, or
 `--frontmost-window`; if you omit a selector, RegionShot uses the same focused,
 main, then first-window fallback as other Accessibility modes.
+
+`--close-window` presses the selected AX window's close button using the same
+window-selection rules.
 
 ## Permissions
 

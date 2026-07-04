@@ -749,6 +749,37 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(name, "server logs")
     }
 
+    func testCloseWindowParsingWithName() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--window-name", "server logs",
+            "--close-window",
+        ])
+
+        guard case .inspectAccessibility(let command) = behavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .name(let name) = command.windowSelection else {
+            return XCTFail("Expected window-name selection.")
+        }
+
+        guard case .closeWindow = command.mode else {
+            return XCTFail("Expected close-window mode.")
+        }
+
+        XCTAssertEqual(name, "server logs")
+    }
+
+    func testCloseWindowRejectsMixedAccessibilityMode() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--close-window", "--raise-window"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--close-window"))
+            XCTAssertTrue(String(describing: error).contains("--raise-window"))
+        }
+    }
+
     func testAsciiArtRejectsMixedModes() {
         XCTAssertThrowsError(
             try parse(arguments: ["--ascii", "/tmp/screenshot.png", "--app", "Terminal"])
