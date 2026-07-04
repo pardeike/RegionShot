@@ -4858,14 +4858,64 @@ private func captureMenuBarSurface(
     item: MenuBarCatalogItem,
     outputURL: URL
 ) throws {
-    let region = try captureRegion(forMenuFrame: surface.frame, item: item)
-    Thread.sleep(forTimeInterval: 0.1)
+    let stableFrame = waitForStableMenuBarSurfaceFrame(
+        initialFrame: menuBarSurfaceFrame(surface),
+        readFrame: { menuBarSurfaceFrame(surface) }
+    )
+    let region = try captureRegion(forMenuFrame: stableFrame, item: item)
 
     do {
         try captureScreenRegion(region: region, outputURL: outputURL)
     } catch RegionShotError.captureFailed(let message) {
         throw RegionShotError.captureFailed("Failed to capture \(surface.kind) for \(formatMenuBarCandidate(item)) at `\(region.rectangleArgument)`: \(message)")
     }
+}
+
+private func menuBarSurfaceFrame(_ surface: MenuBarSurface) -> CGRect? {
+    switch surface {
+    case .menu(let element):
+        return copyAXFrame(from: element)
+    case .window(let snapshot):
+        return currentWindowSnapshots()
+            .first { $0.windowID == snapshot.windowID }?
+            .bounds ?? snapshot.bounds
+    }
+}
+
+func waitForStableMenuBarSurfaceFrame(
+    initialFrame: CGRect?,
+    timeout: TimeInterval = 0.5,
+    pollInterval: TimeInterval = 0.05,
+    now: () -> Date = Date.init,
+    sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
+    readFrame: () -> CGRect?
+) -> CGRect? {
+    let deadline = now().addingTimeInterval(timeout)
+    var previous = nonEmptyMenuBarSurfaceFrame(initialFrame)
+    var latest = previous
+
+    repeat {
+        if let current = nonEmptyMenuBarSurfaceFrame(readFrame()) {
+            if let previous, nearlyEqual(previous, current) {
+                return current
+            }
+
+            previous = current
+            latest = current
+        }
+
+        sleep(pollInterval)
+    } while now() < deadline
+
+    return latest
+}
+
+private func nonEmptyMenuBarSurfaceFrame(_ frame: CGRect?) -> CGRect? {
+    guard let frame, !frame.isEmpty else {
+        return nil
+    }
+
+    return frame
 }
 
 private func captureRegion(

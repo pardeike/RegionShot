@@ -1155,6 +1155,48 @@ final class RegionShotTests: XCTestCase {
         )
     }
 
+    func testWaitForStableMenuBarSurfaceFrameReturnsFirstRepeatedFrame() {
+        let first = CGRect(x: 10, y: 20, width: 100, height: 50)
+        let moving = CGRect(x: 10, y: 24, width: 100, height: 50)
+        let stable = CGRect(x: 10, y: 28, width: 100, height: 50)
+        var frames: [CGRect?] = [moving, stable, stable, first]
+        var observedPollIntervals: [TimeInterval] = []
+
+        let result = waitForStableMenuBarSurfaceFrame(
+            initialFrame: first,
+            timeout: 10,
+            pollInterval: 0.05,
+            now: { Date(timeIntervalSinceReferenceDate: 0) },
+            sleep: { observedPollIntervals.append($0) },
+            readFrame: { frames.removeFirst() }
+        )
+
+        XCTAssertEqual(result, stable)
+        XCTAssertEqual(observedPollIntervals, [0.05, 0.05])
+    }
+
+    func testWaitForStableMenuBarSurfaceFrameReturnsLatestFrameOnTimeout() {
+        let first = CGRect(x: 10, y: 20, width: 100, height: 50)
+        let second = CGRect(x: 10, y: 24, width: 100, height: 50)
+        let third = CGRect(x: 10, y: 28, width: 100, height: 50)
+        var frames: [CGRect?] = [first, nil, .zero, second, third]
+        var currentTime = 0.0
+
+        let result = waitForStableMenuBarSurfaceFrame(
+            initialFrame: nil,
+            timeout: 0.045,
+            pollInterval: 0,
+            now: {
+                defer { currentTime += 0.01 }
+                return Date(timeIntervalSinceReferenceDate: currentTime)
+            },
+            sleep: { _ in },
+            readFrame: { frames.isEmpty ? nil : frames.removeFirst() }
+        )
+
+        XCTAssertEqual(result, third)
+    }
+
     func testTimeoutReturnsFailureWithoutWaitingForOperation() async throws {
         let start = Date()
 
