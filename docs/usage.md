@@ -204,3 +204,15 @@ host process.
 
 The host process is the app that starts `regionshot`, such as Terminal, iTerm,
 or Codex.
+
+## Exit Codes
+
+RegionShot uses distinct exit codes so automation can decide whether to retry,
+ask for a more specific selector, or hand the issue to the user:
+
+- `64`: usage error or invalid arguments
+- `65`: ambiguous app or window match
+- `66`: app or window not found
+- `69`: unavailable feature or missing permission
+- `70`: capture, Accessibility, or encoding failure
+- `75`: timed out operation

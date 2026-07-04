@@ -357,6 +357,29 @@ final class RegionShotTests: XCTestCase {
         XCTAssertFalse(json.contains("\n"))
     }
 
+    func testRegionShotErrorExitCodesDistinguishActionableFailureFamilies() {
+        let expectations: [(RegionShotError, Int32)] = [
+            (.invalidArguments("bad flag"), 64),
+            (.invalidInteger(flag: "--width", value: "wide"), 64),
+            (.invalidRegion("bad rectangle"), 64),
+            (.ambiguousApplication("two apps"), 65),
+            (.ambiguousWindow("two windows"), 65),
+            (.applicationNotFound("missing app"), 66),
+            (.windowNotFound("missing window"), 66),
+            (.unsupportedFeature("not available"), 69),
+            (.capturePermissionDenied, 69),
+            (.accessibilityPermissionDenied, 69),
+            (.captureFailed("capture failed"), 70),
+            (.accessibilityQueryFailed("query failed"), 70),
+            (.encodeFailed("encoding failed"), 70),
+            (.operationTimedOut("too slow"), 75),
+        ]
+
+        for (error, expectedExitCode) in expectations {
+            XCTAssertEqual(error.exitCode, expectedExitCode, String(describing: error))
+        }
+    }
+
     func testVisibleWindowCatalogFiltersToNormalVisibleWindows() {
         let snapshots = [
             WindowSnapshot(

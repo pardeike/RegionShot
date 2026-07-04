@@ -639,8 +639,16 @@ enum RegionShotError: LocalizedError, Sendable {
         switch self {
         case .invalidArguments, .invalidInteger, .invalidRegion:
             return 64
-        case .unsupportedFeature, .capturePermissionDenied, .accessibilityPermissionDenied, .applicationNotFound, .ambiguousApplication, .windowNotFound, .ambiguousWindow, .captureFailed, .operationTimedOut, .accessibilityQueryFailed, .encodeFailed:
-            return 1
+        case .ambiguousApplication, .ambiguousWindow:
+            return 65
+        case .applicationNotFound, .windowNotFound:
+            return 66
+        case .unsupportedFeature, .capturePermissionDenied, .accessibilityPermissionDenied:
+            return 69
+        case .captureFailed, .accessibilityQueryFailed, .encodeFailed:
+            return 70
+        case .operationTimedOut:
+            return 75
         }
     }
 }
@@ -732,6 +740,14 @@ Rules:
   rectangle mode with `--app` includes only that app, even if covered by other windows
   if ScreenCaptureKit app/window capture times out, try `--visible-window` for visible-pixel capture
   app/window modes target app windows; use menu-bar modes for status-item UI from accessory/background apps
+
+Exit codes:
+  64 usage or invalid arguments
+  65 ambiguous app or window match
+  66 app or window not found
+  69 unavailable feature or missing permission
+  70 capture, Accessibility, or encoding failure
+  75 timed out operation
 """
 
 private let codexSkillName = "regionshot"
