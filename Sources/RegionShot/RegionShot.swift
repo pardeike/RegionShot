@@ -5508,7 +5508,7 @@ private func accessibilityElementResponse(
         }
         : nil
     let truncated = (children.count > childLimit) || (depthRemaining == 0 && !children.isEmpty)
-    let actions = copyAXActions(from: element)
+    let actions = reportedAXActions(copyAXActions(from: element))
 
     return AccessibilityElementResponse(
         path: path,
@@ -5527,6 +5527,14 @@ private func accessibilityElementResponse(
         truncated: truncated ? true : nil,
         children: childResponses
     )
+}
+
+func reportedAXActions(_ actions: [String]) -> [String] {
+    if actions == [kAXShowMenuAction as String] {
+        return []
+    }
+
+    return actions
 }
 
 private func filteredAccessibilityTree(

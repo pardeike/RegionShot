@@ -1419,6 +1419,39 @@ final class RegionShotTests: XCTestCase {
         )
     }
 
+    func testReportedAXActionsOmitsShowMenuOnlyNoise() throws {
+        XCTAssertEqual(reportedAXActions([kAXShowMenuAction as String]), [])
+        XCTAssertEqual(reportedAXActions([kAXPressAction as String]), [kAXPressAction as String])
+        XCTAssertEqual(
+            reportedAXActions([kAXShowMenuAction as String, kAXPressAction as String]),
+            [kAXShowMenuAction as String, kAXPressAction as String]
+        )
+
+        let showMenuOnlyActions = reportedAXActions([kAXShowMenuAction as String])
+        let response = AccessibilityElementResponse(
+            path: nil,
+            role: "AXStaticText",
+            subrole: nil,
+            title: "Decorative",
+            description: nil,
+            identifier: nil,
+            value: nil,
+            enabled: nil,
+            focused: nil,
+            selected: nil,
+            frame: nil,
+            actions: showMenuOnlyActions.isEmpty ? nil : showMenuOnlyActions,
+            childCount: 0,
+            truncated: nil,
+            children: nil
+        )
+
+        XCTAssertEqual(
+            try encodeJSON(response),
+            #"{"childCount":0,"role":"AXStaticText","title":"Decorative"}"#
+        )
+    }
+
     func testStringifyAXAttributeValueNormalizesCommonStateValues() {
         XCTAssertEqual(stringifyAXAttributeValue("  Hello\nWorld  "), "Hello World")
         XCTAssertEqual(stringifyAXAttributeValue(NSAttributedString(string: "Styled")), "Styled")
