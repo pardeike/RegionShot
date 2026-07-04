@@ -1127,6 +1127,34 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(report, expected)
     }
 
+    func testMenuBarWindowCloseStopsAfterEscapeClosesWindow() {
+        var attempts: [MenuBarWindowCloseAttempt] = []
+
+        closeMenuBarWindowSurface(processID: 123, windowID: 456) { attempt in
+            attempts.append(attempt)
+            return true
+        }
+
+        XCTAssertEqual(attempts, [.pressEscape(processID: 123, windowID: 456)])
+    }
+
+    func testMenuBarWindowCloseRepressesItemOnlyAfterEscapeFails() {
+        var attempts: [MenuBarWindowCloseAttempt] = []
+
+        closeMenuBarWindowSurface(processID: 123, windowID: 456) { attempt in
+            attempts.append(attempt)
+            return attempt == .pressMenuBarItem(windowID: 456)
+        }
+
+        XCTAssertEqual(
+            attempts,
+            [
+                .pressEscape(processID: 123, windowID: 456),
+                .pressMenuBarItem(windowID: 456),
+            ]
+        )
+    }
+
     func testTimeoutReturnsFailureWithoutWaitingForOperation() async throws {
         let start = Date()
 

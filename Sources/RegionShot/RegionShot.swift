@@ -388,6 +388,11 @@ struct WindowSnapshot {
     let alpha: Double
 }
 
+enum MenuBarWindowCloseAttempt: Equatable, Sendable {
+    case pressEscape(processID: pid_t, windowID: CGWindowID)
+    case pressMenuBarItem(windowID: CGWindowID)
+}
+
 private struct RunningApplicationSearchResponse: Encodable {
     let query: String
     let matches: [RunningApplicationEntry]
@@ -4789,13 +4794,30 @@ private func closeMenuBarSurface(_ surface: MenuBarSurface, item: MenuBarCatalog
     switch surface {
     case .menu(let menu):
         cancelMenu(menu)
+        waitForMenuToClose(menu)
     case .window(let snapshot):
-        if windowClosesAfterPressingMenuBarItem(item, windowID: snapshot.windowID) {
-            return
+        closeMenuBarWindowSurface(processID: snapshot.ownerPID, windowID: snapshot.windowID) { attempt in
+            switch attempt {
+            case .pressEscape(let processID, let windowID):
+                pressEscapeKey(inProcess: processID)
+                return waitForWindowToClose(windowID)
+            case .pressMenuBarItem(let windowID):
+                return windowClosesAfterPressingMenuBarItem(item, windowID: windowID)
+            }
         }
-
-        pressEscapeKey(inProcess: snapshot.ownerPID)
     }
+}
+
+func closeMenuBarWindowSurface(
+    processID: pid_t,
+    windowID: CGWindowID,
+    attemptClose: (MenuBarWindowCloseAttempt) -> Bool
+) {
+    if attemptClose(.pressEscape(processID: processID, windowID: windowID)) {
+        return
+    }
+
+    _ = attemptClose(.pressMenuBarItem(windowID: windowID))
 }
 
 private func windowClosesAfterPressingMenuBarItem(
