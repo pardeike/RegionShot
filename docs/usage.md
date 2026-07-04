@@ -133,6 +133,7 @@ menu item by title, description, or identifier.
 ```bash
 regionshot --app "System Settings" --list-elements
 regionshot --app "System Settings" --list-elements --depth 2 --max-children 12
+regionshot --app "System Settings" --get --role AXTextField --title Name
 regionshot --app "System Settings" --press --role AXButton --title Done
 regionshot --app "System Settings" --press-at 14,14
 regionshot --app "System Settings" --element-at 14,14
@@ -146,6 +147,10 @@ Element JSON includes structural fields plus readable state when macOS exposes
 it: `value`, `enabled`, `focused`, and `selected`.
 Use `--depth N` and `--max-children N` with `--list-elements` to reduce or
 expand the tree.
+
+`--get` finds one accessibility element using selector fields and returns its
+full JSON attributes without performing an action. It uses the same selector
+fields and matching rules as `--press`.
 
 `--press` finds a pressable accessibility element using selector fields such as
 `--role`, `--subrole`, `--title`, `--identifier`, and `--description`, then

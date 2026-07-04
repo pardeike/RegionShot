@@ -401,6 +401,79 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(command.treeChildLimit, 10)
     }
 
+    func testAccessibilityGetElementParsing() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--get",
+            "--role", "AXTextField",
+            "--title", "Name",
+            "--identifier", "name-field",
+        ])
+
+        guard case .inspectAccessibility(let command) = behavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .getElement(let selector) = command.mode else {
+            return XCTFail("Expected accessibility get mode.")
+        }
+
+        XCTAssertEqual(selector.role, "AXTextField")
+        XCTAssertEqual(selector.title, "Name")
+        XCTAssertEqual(selector.identifier, "name-field")
+        XCTAssertNil(selector.subrole)
+        XCTAssertNil(selector.elementDescription)
+    }
+
+    func testAccessibilityGetElementAliasParsing() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--frontmost-window",
+            "--get-element",
+            "--description", "Search field",
+        ])
+
+        guard case .inspectAccessibility(let command) = behavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .getElement(let selector) = command.mode else {
+            return XCTFail("Expected accessibility get mode.")
+        }
+
+        guard case .frontmost = command.windowSelection else {
+            return XCTFail("Expected frontmost window selection.")
+        }
+
+        XCTAssertEqual(selector.elementDescription, "Search field")
+    }
+
+    func testAccessibilityGetElementRequiresSelector() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--get"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--get"))
+        }
+    }
+
+    func testAccessibilitySelectorFieldsRequireGetOrPressMode() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--title", "Done"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--get"))
+            XCTAssertTrue(String(describing: error).contains("--press"))
+        }
+    }
+
+    func testAccessibilityGetElementRejectsMixedAccessibilityMode() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--get", "--role", "AXButton", "--press-at", "1,1"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--get"))
+            XCTAssertTrue(String(describing: error).contains("--press-at"))
+        }
+    }
+
     func testAccessibilityTreeLimitOptionsRequireElementListMode() {
         XCTAssertThrowsError(
             try parse(arguments: ["--app", "Terminal", "--depth", "2"])

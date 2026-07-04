@@ -276,6 +276,7 @@ enum AccessibilityMode: Sendable {
     case listWindows
     case listElements
     case elementAt(WindowPoint)
+    case getElement(AccessibilitySelector)
     case pressAt(WindowPoint)
     case pressElement(AccessibilitySelector)
     case raiseWindow
@@ -528,6 +529,15 @@ private struct AccessibilitySelectorResponse: Encodable {
     let description: String?
 }
 
+private struct AccessibilityGetResponse: Encodable {
+    let application: WindowListApplication
+    let window: AccessibilityWindowEntry
+    let mode: String
+    let selector: AccessibilitySelectorResponse
+    let matched: AccessibilityElementResponse
+    let ancestors: [AccessibilityElementResponse]
+}
+
 private struct AccessibilityPressResponse: Encodable {
     let application: WindowListApplication
     let window: AccessibilityWindowEntry
@@ -776,12 +786,16 @@ Forms:
   regionshot --app APP --menu-bar-item TEXT --press-menu-item TEXT
   regionshot --app APP --menu-bar-item TEXT --capture-menu [--output FILE]
   regionshot --app APP --list-elements [--depth N] [--max-children N]
+  regionshot --app APP --get --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
   regionshot --app APP --press --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
   regionshot --app APP --press-at X,Y
   regionshot --app APP --element-at X,Y
   regionshot --app APP --frontmost-window --list-elements
   regionshot --app APP --window-index N --list-elements
   regionshot --app APP --window-name TITLE --list-elements
+  regionshot --app APP --frontmost-window --get --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
+  regionshot --app APP --window-index N --get --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
+  regionshot --app APP --window-name TITLE --get --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
   regionshot --app APP --frontmost-window --press --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
   regionshot --app APP --window-index N --press --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
   regionshot --app APP --window-name TITLE --press --role ROLE [--subrole SUBROLE] [--title TITLE] [--identifier ID] [--description TEXT]
@@ -822,6 +836,7 @@ Rules:
   `--frontmost-window`, `--window-index`, or `--window-name` can override that default for accessibility modes
   `--element-at` and `--press-at` use window-relative x,y coordinates in points
   selector fields: `--role`, `--subrole`, `--title`, `--identifier`, `--description`
+  `--get` (alias: `--get-element`) returns one matching accessibility element without performing an action
   `--title`, `--identifier`, and `--description` prefer exact matches, then fall back to case-insensitive contains
   `--list-elements` accepts `--depth` 0...12 and `--max-children` 1...200
   capture and ScreenCaptureKit window listing require Screen Recording permission
@@ -1347,6 +1362,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         defaultValue: defaultAccessibilityTreeChildLimit,
         allowedRange: accessibilityTreeChildLimitRange
     )
+    let wantsAccessibilityGet = parsed.flags.contains("--get") || parsed.flags.contains("--get-element")
     let wantsPress = parsed.flags.contains("--press") || parsed.flags.contains("--press-element")
     let wantsMenuBarPress = wantsPress && menuBarSelection != nil
     let wantsAccessibilityPress = wantsPress && !wantsMenuBarPress
@@ -1440,13 +1456,14 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         wantsAccessibilityWindowList ? 1 : 0,
         wantsElementList ? 1 : 0,
         elementPoint != nil ? 1 : 0,
+        wantsAccessibilityGet ? 1 : 0,
         wantsAccessibilityPress ? 1 : 0,
         pressPoint != nil ? 1 : 0,
         wantsRaiseWindow ? 1 : 0,
     ].reduce(0, +)
 
     if accessibilityModeCount > 1 {
-        throw RegionShotError.invalidArguments("Choose only one of `--list-accessibility-windows`, `--list-elements`, `--element-at`, `--press`/`--press-element`, `--press-at`, or `--raise-window`.")
+        throw RegionShotError.invalidArguments("Choose only one of `--list-accessibility-windows`, `--list-elements`, `--element-at`, `--get`/`--get-element`, `--press`/`--press-element`, `--press-at`, or `--raise-window`.")
     }
 
     let menuBarModeCount = [
@@ -1476,6 +1493,8 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         accessibilityMode = .listElements
     } else if let elementPoint {
         accessibilityMode = .elementAt(elementPoint)
+    } else if wantsAccessibilityGet {
+        accessibilityMode = .getElement(selector)
     } else if wantsAccessibilityPress {
         accessibilityMode = .pressElement(selector)
     } else if let pressPoint {
@@ -1647,12 +1666,16 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         throw RegionShotError.invalidArguments("Accessibility inspection and actions print JSON to stdout and do not use `--output`.")
     }
 
+    if wantsAccessibilityGet, selector.isEmpty {
+        throw RegionShotError.invalidArguments("`--get` (alias: `--get-element`) requires at least one selector field: `--role`, `--subrole`, `--title`, `--identifier`, or `--description`.")
+    }
+
     if wantsAccessibilityPress, selector.isEmpty {
         throw RegionShotError.invalidArguments("`--press` (alias: `--press-element`) requires at least one selector field: `--role`, `--subrole`, `--title`, `--identifier`, or `--description`.")
     }
 
-    if !wantsAccessibilityPress, !selector.isEmpty {
-        throw RegionShotError.invalidArguments("Selector fields require `--press` or `--press-element`.")
+    if !wantsAccessibilityGet, !wantsAccessibilityPress, !selector.isEmpty {
+        throw RegionShotError.invalidArguments("Selector fields require `--get`/`--get-element` or `--press`/`--press-element`.")
     }
 
     if pressPoint != nil, !selector.isEmpty {
@@ -1791,7 +1814,7 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         let argument = arguments[index]
 
         switch argument {
-        case "--help", "-h", "--version", "--doctor", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--press", "--press-element", "--raise-window", "--raise", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only":
+        case "--help", "-h", "--version", "--doctor", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--list-menu-bar-items", "--get", "--get-element", "--press", "--press-element", "--raise-window", "--raise", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only":
             flags.insert(argument)
             index += 1
         case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--press-at", "--role", "--subrole", "--title", "--identifier", "--description", "--depth", "--max-children", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language":
@@ -2342,6 +2365,17 @@ private func inspectAccessibility(using command: AccessibilityCommand) async thr
             ancestors: accessibilityAncestorResponses(for: refinedHitElement, stoppingAt: accessibilityWindow)
         )
         return try encodeJSON(response)
+    case .getElement(let selector):
+        let selectedElement = try selectAccessibilityElement(in: accessibilityWindow, using: selector)
+        let response = AccessibilityGetResponse(
+            application: windowListApplication(for: catalog.application),
+            window: accessibilityWindowEntry(for: selectedWindow),
+            mode: "get",
+            selector: accessibilitySelectorResponse(for: selector),
+            matched: accessibilityElementResponse(for: selectedElement.element, depthRemaining: 1),
+            ancestors: accessibilityAncestorResponses(for: selectedElement.element, stoppingAt: accessibilityWindow)
+        )
+        return try encodeJSON(response)
     case .pressAt(let point):
         try validate(windowPoint: point, within: selectedWindow.frame, windowTitle: displayTitle(selectedWindow.title), flag: "--press-at")
 
@@ -2383,7 +2417,7 @@ private func inspectAccessibility(using command: AccessibilityCommand) async thr
         )
         return try encodeJSON(response)
     case .pressElement(let selector):
-        let pressableElement = try selectAccessibilityElement(in: accessibilityWindow, using: selector)
+        let pressableElement = try selectPressableAccessibilityElement(in: accessibilityWindow, using: selector)
         try performPress(on: pressableElement.element)
 
         let response = AccessibilityPressResponse(
@@ -4346,8 +4380,46 @@ private func selectAccessibilityElement(
     in root: AXUIElement,
     using selector: AccessibilitySelector
 ) throws -> AccessibilityElementCandidate {
+    let candidates = matchingAccessibilityElementCandidates(
+        in: root,
+        using: selector,
+        requirePressAction: false
+    )
+
+    return try selectUniqueAccessibilityCandidate(
+        from: candidates,
+        selector: selector,
+        candidateDescription: "accessibility element"
+    )
+}
+
+private func selectPressableAccessibilityElement(
+    in root: AXUIElement,
+    using selector: AccessibilitySelector
+) throws -> AccessibilityElementCandidate {
+    let candidates = matchingAccessibilityElementCandidates(
+        in: root,
+        using: selector,
+        requirePressAction: true
+    )
+
+    return try selectUniqueAccessibilityCandidate(
+        from: candidates,
+        selector: selector,
+        candidateDescription: "pressable accessibility element"
+    )
+}
+
+private func matchingAccessibilityElementCandidates(
+    in root: AXUIElement,
+    using selector: AccessibilitySelector,
+    requirePressAction: Bool
+) -> [AccessibilityElementCandidate] {
     var candidates = collectAccessibilityElementCandidates(in: root, depthRemaining: 10, childLimit: 80)
-        .filter { $0.actions.contains(kAXPressAction as String) }
+
+    if requirePressAction {
+        candidates = candidates.filter { $0.actions.contains(kAXPressAction as String) }
+    }
 
     candidates = filterCandidates(candidates, exactMatchFor: selector.role) { candidate in
         candidate.role
@@ -4374,8 +4446,16 @@ private func selectAccessibilityElement(
         candidate.description
     }
 
+    return candidates
+}
+
+private func selectUniqueAccessibilityCandidate(
+    from candidates: [AccessibilityElementCandidate],
+    selector: AccessibilitySelector,
+    candidateDescription: String
+) throws -> AccessibilityElementCandidate {
     guard !candidates.isEmpty else {
-        throw RegionShotError.accessibilityQueryFailed("No pressable accessibility element matched \(describe(selector: selector)).")
+        throw RegionShotError.accessibilityQueryFailed("No \(candidateDescription) matched \(describe(selector: selector)).")
     }
 
     if candidates.count == 1, let candidate = candidates.first {
@@ -4387,7 +4467,7 @@ private func selectAccessibilityElement(
         .map(formatAccessibilityCandidate)
         .joined(separator: ", ")
 
-    throw RegionShotError.accessibilityQueryFailed("More than one pressable accessibility element matched \(describe(selector: selector)): \(suggestions)")
+    throw RegionShotError.accessibilityQueryFailed("More than one \(candidateDescription) matched \(describe(selector: selector)): \(suggestions)")
 }
 
 private func collectAccessibilityElementCandidates(
