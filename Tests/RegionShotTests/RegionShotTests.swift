@@ -134,6 +134,7 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(command.target, .bundleIdentifier("com.apple.TextEdit"))
         XCTAssertEqual(command.arguments, [])
         XCTAssertFalse(command.waitForWindow)
+        XCTAssertTrue(command.promptForAccessibility)
         XCTAssertEqual(command.timeout, 5.0, accuracy: 0.001)
     }
 
@@ -153,7 +154,24 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(command.target, .path(".build/debug/MyDebugApp"))
         XCTAssertEqual(command.arguments, ["--fixture", "smoke", "--flag"])
         XCTAssertTrue(command.waitForWindow)
+        XCTAssertTrue(command.promptForAccessibility)
         XCTAssertEqual(command.timeout, 2.5, accuracy: 0.001)
+    }
+
+    func testLaunchApplicationParsingSupportsNoPrompt() throws {
+        let behavior = try parse(arguments: [
+            "launch",
+            "com.apple.TextEdit",
+            "--wait-window",
+            "--no-prompt",
+        ])
+
+        guard case .launchApplication(let command) = behavior else {
+            return XCTFail("Expected launch application behavior.")
+        }
+
+        XCTAssertTrue(command.waitForWindow)
+        XCTAssertFalse(command.promptForAccessibility)
     }
 
     func testLaunchApplicationRejectsMissingTarget() {
@@ -162,6 +180,15 @@ final class RegionShotTests: XCTestCase {
         ) { error in
             XCTAssertTrue(String(describing: error).contains("launch"))
             XCTAssertTrue(String(describing: error).contains("PATH"))
+        }
+    }
+
+    func testLaunchApplicationRejectsNoPromptWithoutWaitWindow() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["launch", "com.apple.TextEdit", "--no-prompt"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--no-prompt"))
+            XCTAssertTrue(String(describing: error).contains("--wait-window"))
         }
     }
 
@@ -717,6 +744,7 @@ final class RegionShotTests: XCTestCase {
 
         XCTAssertEqual(name, "Terminal")
         XCTAssertNil(command.windowSelection)
+        XCTAssertTrue(command.promptForAccessibility)
     }
 
     func testAccessibilityWindowListAliasParsing() throws {
@@ -731,6 +759,46 @@ final class RegionShotTests: XCTestCase {
 
         guard case .listWindows = command.mode else {
             return XCTFail("Expected accessibility window list mode.")
+        }
+    }
+
+    func testNoPromptParsingSupportsAccessibilityAndMenuBarModes() throws {
+        let accessibilityBehavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--list-elements",
+            "--no-prompt",
+        ])
+
+        guard case .inspectAccessibility(let accessibilityCommand) = accessibilityBehavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        XCTAssertFalse(accessibilityCommand.promptForAccessibility)
+
+        let menuBarBehavior = try parse(arguments: [
+            "--app", "Drafty",
+            "--list-menu-bar-items",
+            "--no-prompt",
+        ])
+
+        guard case .menuBar(let menuBarCommand) = menuBarBehavior else {
+            return XCTFail("Expected menu-bar behavior.")
+        }
+
+        XCTAssertFalse(menuBarCommand.promptForAccessibility)
+    }
+
+    func testNoPromptRejectsNonAccessibilityModes() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["1", "2", "3", "4", "--no-prompt"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--no-prompt"))
+        }
+
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--list-windows", "--no-prompt"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--no-prompt"))
         }
     }
 
@@ -1442,6 +1510,7 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(name, "Drafty")
         XCTAssertEqual(index, 0)
         XCTAssertEqual(selection.query, "Quick Tasks")
+        XCTAssertTrue(command.promptForAccessibility)
         XCTAssertNil(command.outputURL)
     }
 

@@ -60,7 +60,9 @@ the activation request.
 
 `launch` starts an app bundle path, bundle id, or executable path. Add
 `--wait-window` to wait until the launched process exposes its first accessibility
-window. Arguments after `--args` are passed to the launched app unchanged.
+window. Add `--no-prompt` with `--wait-window` to fail instead of showing the
+system Accessibility permission prompt. Arguments after `--args` are passed to
+the launched app unchanged.
 
 `quit` resolves a running app and asks it to terminate. Add `--force` to call
 force-terminate instead. The command returns data describing the app and whether
@@ -384,6 +386,10 @@ or Codex.
 
 Use `regionshot doctor` to check both permissions without triggering a system
 permission prompt.
+
+Add `--no-prompt` to Accessibility, menu-bar, or `launch --wait-window` commands
+to fail immediately when Accessibility permission is missing instead of asking
+macOS to show the permission prompt.
 
 ## Exit Codes
 

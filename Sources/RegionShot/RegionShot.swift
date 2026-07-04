@@ -156,6 +156,7 @@ struct LaunchApplicationCommand: Sendable {
     let target: LaunchTarget
     let arguments: [String]
     let waitForWindow: Bool
+    let promptForAccessibility: Bool
     let timeout: TimeInterval
 }
 
@@ -226,6 +227,7 @@ struct AccessibilityCommand: Sendable {
     let applicationSelector: ApplicationSelector
     let windowSelection: WindowSelection?
     let mode: AccessibilityMode
+    let promptForAccessibility: Bool
     let treeDepth: Int
     let treeChildLimit: Int
     let treeRoleFilter: Set<String>
@@ -238,6 +240,7 @@ struct MenuBarCommand: Sendable {
     let applicationSelector: ApplicationSelector
     let selection: MenuBarSelection?
     let mode: MenuBarMode
+    let promptForAccessibility: Bool
     let outputURL: URL?
     let screenCaptureTimeout: TimeInterval
     let rawOutput: Bool
@@ -1264,7 +1267,7 @@ Forms:
   regionshot doctor
   regionshot clipboard [--set TEXT]
   regionshot activate --app APP
-  regionshot launch PATH|BUNDLE_ID [--wait-window] [--timeout SECONDS] [--args ARG ...]
+  regionshot launch PATH|BUNDLE_ID [--wait-window [--no-prompt]] [--timeout SECONDS] [--args ARG ...]
   regionshot quit --app APP [--force]
   regionshot --find-app TEXT
   regionshot --list-displays
@@ -1361,6 +1364,7 @@ Rules:
   `--visible-window` uses visible pixels from the current screen, including floating panels; occluding windows are included
   `--list-visible-windows` uses CGWindowList; `--visible-window` uses CGWindowList selection plus ScreenCaptureKit display capture
   `--list-accessibility-windows` lists AX windows, supported actions, focused/main state, and whether the app/window is frontmost
+  add `--no-prompt` to Accessibility, menu-bar, or `launch --wait-window` commands to fail instead of showing the system Accessibility permission prompt
   `--raise-window` (alias: `--raise`) activates the app and performs `AXRaise` on the selected AX window
   `--close-window` presses the selected AX window's close button
   `--minimize-window` presses the selected AX window's minimize button
@@ -1587,7 +1591,7 @@ func launch(using command: LaunchApplicationCommand) throws -> String {
     let waitedWindow: AccessibilityWindowEntry?
 
     if command.waitForWindow {
-        try ensureAccessibilityAccess(prompt: true)
+        try ensureAccessibilityAccess(prompt: command.promptForAccessibility)
         let waited = try waitForAnyAccessibilityWindow(
             selector: .processID(launched.application.processID),
             timeout: command.timeout
@@ -2229,6 +2233,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     let wantsRawOutput = parsed.flags.contains("--raw")
     let wantsWithAscii = parsed.flags.contains("--with-ascii")
     let wantsWithOCR = parsed.flags.contains("--with-ocr")
+    let wantsNoPrompt = parsed.flags.contains("--no-prompt")
     let imageOutput = try parseImageOutputOptions(
         formatValue: parsed.values["--format"],
         qualityValue: parsed.values["--quality"],
@@ -2514,6 +2519,10 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         }
     }
 
+    if wantsNoPrompt, accessibilityMode == nil, menuBarMode == nil {
+        throw RegionShotError.invalidArguments("`--no-prompt` is only supported for Accessibility, menu-bar, and `launch --wait-window` commands.")
+    }
+
     if windowSelection != nil, applicationSelector == nil {
         throw RegionShotError.invalidArguments("Window selection requires an app selector (`--app`, `--app-name`, or `--pid`).")
     }
@@ -2717,6 +2726,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
                 applicationSelector: applicationSelector!,
                 selection: menuBarSelection,
                 mode: menuBarMode,
+                promptForAccessibility: !wantsNoPrompt,
                 outputURL: wantsCaptureMenu ? try outputURL(from: outputPath, format: imageOutput.format) : nil,
                 screenCaptureTimeout: screenCaptureTimeout,
                 rawOutput: wantsRawOutput,
@@ -2768,6 +2778,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
                 applicationSelector: applicationSelector!,
                 windowSelection: windowSelection,
                 mode: accessibilityMode,
+                promptForAccessibility: !wantsNoPrompt,
                 treeDepth: elementTreeDepth,
                 treeChildLimit: elementTreeChildLimit,
                 treeRoleFilter: elementTreeRoleFilter,
@@ -2847,7 +2858,7 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         let argument = arguments[index]
 
         switch argument {
-        case "--help", "-h", "--version", "--doctor", "--list-displays", "--all-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--interactive", "--flat", "--list-menu-bar-items", "--get", "--get-element", "--wait-for-element", "--press", "--press-element", "--raise-window", "--raise", "--close-window", "--minimize-window", "--right", "--double", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only", "--raw", "--with-ascii", "--with-ocr":
+        case "--help", "-h", "--version", "--doctor", "--list-displays", "--all-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--interactive", "--flat", "--list-menu-bar-items", "--get", "--get-element", "--wait-for-element", "--press", "--press-element", "--raise-window", "--raise", "--close-window", "--minimize-window", "--right", "--double", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only", "--raw", "--with-ascii", "--with-ocr", "--no-prompt":
             flags.insert(argument)
             index += 1
         case "--x", "--y", "--width", "--height", "--display", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--wait-for-window", "--press-at", "--path", "--role", "--subrole", "--title", "--identifier", "--description", "--set-value", "--type", "--key", "--click", "--drag", "--scroll", "--move-window", "--resize-window", "--depth", "--max-children", "--roles", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language", "--format", "--quality", "--max-dimension":
@@ -2898,6 +2909,7 @@ func parseLaunchApplicationCommand(arguments: [String]) throws -> LaunchApplicat
     var target: String?
     var launchArguments: [String] = []
     var waitForWindow = false
+    var promptForAccessibility = true
     var timeout = defaultScreenCaptureKitTimeout
     var index = 0
 
@@ -2914,6 +2926,9 @@ func parseLaunchApplicationCommand(arguments: [String]) throws -> LaunchApplicat
         case "--wait-window":
             waitForWindow = true
             index += 1
+        case "--no-prompt":
+            promptForAccessibility = false
+            index += 1
         case "--timeout":
             let valueIndex = index + 1
             guard valueIndex < arguments.count else {
@@ -2923,7 +2938,7 @@ func parseLaunchApplicationCommand(arguments: [String]) throws -> LaunchApplicat
             index += 2
         default:
             if argument.hasPrefix("--") {
-                throw RegionShotError.invalidArguments("`launch` accepts PATH|BUNDLE_ID, optional `--wait-window`, optional `--timeout SECONDS`, and optional `--args ARG ...`.")
+                throw RegionShotError.invalidArguments("`launch` accepts PATH|BUNDLE_ID, optional `--wait-window`, optional `--no-prompt`, optional `--timeout SECONDS`, and optional `--args ARG ...`.")
             }
 
             guard target == nil else {
@@ -2939,10 +2954,15 @@ func parseLaunchApplicationCommand(arguments: [String]) throws -> LaunchApplicat
         throw RegionShotError.invalidArguments("`launch` requires PATH|BUNDLE_ID.")
     }
 
+    if !promptForAccessibility, !waitForWindow {
+        throw RegionShotError.invalidArguments("`launch --no-prompt` requires `--wait-window`; launch without waiting does not use Accessibility.")
+    }
+
     return LaunchApplicationCommand(
         target: inferLaunchTarget(normalizedTarget),
         arguments: launchArguments,
         waitForWindow: waitForWindow,
+        promptForAccessibility: promptForAccessibility,
         timeout: timeout
     )
 }
@@ -3806,7 +3826,7 @@ private func listWindows(using command: ListWindowsCommand) async throws -> Stri
 }
 
 private func inspectAccessibility(using command: AccessibilityCommand) async throws -> String {
-    try ensureAccessibilityAccess(prompt: true)
+    try ensureAccessibilityAccess(prompt: command.promptForAccessibility)
 
     switch command.mode {
     case .typeText(let text):
@@ -4164,7 +4184,7 @@ private func inspectAccessibility(using command: AccessibilityCommand) async thr
 }
 
 private func handleMenuBar(using command: MenuBarCommand) async throws -> String {
-    try ensureAccessibilityAccess(prompt: true)
+    try ensureAccessibilityAccess(prompt: command.promptForAccessibility)
 
     let catalog = try buildMenuBarItemCatalog(selector: command.applicationSelector)
 
