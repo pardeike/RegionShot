@@ -70,10 +70,18 @@ macOS accepted the termination request.
 
 ```bash
 regionshot --list-displays
+regionshot --display DISPLAY_ID --output ~/Desktop/display.png
+regionshot --all-displays --format jpeg --quality 0.7 --max-dimension 1600
 ```
 
 `--list-displays` returns active displays, including the display id, point
 frame, pixel size, scale, and whether the display is the main display.
+
+Use `--display DISPLAY_ID` to capture one active display by id, or
+`--all-displays` to capture the union of all active display frames. These forms
+support the same capture output options as rectangle capture, including
+`--output`, `--format`, `--quality`, `--max-dimension`, `--with-ascii`,
+`--with-ocr`, and `--raw`.
 
 ## Basic Capture
 

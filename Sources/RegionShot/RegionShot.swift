@@ -166,6 +166,7 @@ struct QuitApplicationCommand: Sendable {
 
 struct CaptureCommand: Sendable {
     let region: CaptureRegion?
+    let displaySelection: DisplayCaptureSelection?
     let outputURL: URL
     let applicationSelector: ApplicationSelector?
     let windowSelection: WindowSelection?
@@ -174,6 +175,11 @@ struct CaptureCommand: Sendable {
     let rawOutput: Bool
     let textOutput: CaptureTextOptions?
     let imageOutput: ImageOutputOptions
+}
+
+enum DisplayCaptureSelection: Equatable, Sendable {
+    case displayID(CGDirectDisplayID)
+    case allDisplays
 }
 
 struct FindAppsCommand: Sendable {
@@ -1262,6 +1268,8 @@ Forms:
   regionshot quit --app APP [--force]
   regionshot --find-app TEXT
   regionshot --list-displays
+  regionshot --display DISPLAY_ID [--output FILE] [--timeout SECONDS] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
+  regionshot --all-displays [--output FILE] [--timeout SECONDS] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
   regionshot --ascii IMAGE [--ascii-style layout|tone] [--ascii-width N] [--ascii-max-height N] [--ascii-language CODE[,CODE...]] [--ascii-invert] [--ascii-no-ocr] [--ocr-only] [--raw]
   regionshot X Y WIDTH HEIGHT [--app APP] [--output FILE] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
   regionshot --x X --y Y --width WIDTH --height HEIGHT [--app APP] [--output FILE] [--format png|jpeg] [--quality 0...1] [--max-dimension N] [--with-ascii | --with-ocr] [--raw]
@@ -1334,6 +1342,8 @@ Rules:
   `launch PATH|BUNDLE_ID` starts an app bundle, bundle id, or executable path; `--wait-window` waits for its first accessibility window
   `quit --app APP` asks a running app to terminate; add `--force` to force-terminate
   `--list-displays` returns active display ids, point frames, pixel sizes, scale, and main-display status
+  `--display DISPLAY_ID` captures one active display; use `--list-displays` to find ids
+  `--all-displays` captures the union of all active display frames
   `--app` accepts app name, bundle id, or pid; pure integers are treated as pids for compatibility
   use `--pid PID` to select by process id, or `--app-name NAME` to force name/bundle matching for numeric app names
   use `--find-app TEXT` when the exact running app name or pid is unknown
@@ -1700,6 +1710,12 @@ func currentDisplayEntries() -> [DisplayEntry] {
     activeDisplayIDs()
         .map(displayEntry(for:))
         .sorted(by: displayEntrySort)
+}
+
+private func activeDisplayFrames() -> [(id: CGDirectDisplayID, frame: CGRect)] {
+    activeDisplayIDs().map { displayID in
+        (id: displayID, frame: CGDisplayBounds(displayID))
+    }
 }
 
 private func activeDisplayIDs() -> [CGDirectDisplayID] {
@@ -2146,6 +2162,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     }
 
     let applicationSelector = try parseApplicationSelector(values: parsed.values)
+    let displaySelection = try parseDisplayCaptureSelection(parsed)
     let findAppQuery = normalizedArgumentValue(parsed.values["--find-app"])
     let windowSelection = try parseWindowSelection(parsed)
     let windowCrop = try parseWindowCrop(parsed.values["--window-crop"])
@@ -2430,7 +2447,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         menuBarMode = nil
     }
 
-    let rawCapturesRectangle = parsed.region != nil && accessibilityMode == nil && menuBarMode == nil && !wantsWindowList && !wantsVisibleWindowList
+    let rawCapturesRectangle = (parsed.region != nil || displaySelection != nil) && accessibilityMode == nil && menuBarMode == nil && !wantsWindowList && !wantsVisibleWindowList
     let rawCapturesAppWindow = applicationSelector != nil && windowSelection != nil && accessibilityMode == nil && menuBarMode == nil && !wantsWindowList && !wantsVisibleWindowList && !wantsVisibleWindowCapture
     let captureTextIsSupported = wantsCaptureMenu || wantsVisibleWindowCapture || rawCapturesRectangle || rawCapturesAppWindow
     let rawIsSupported = captureTextIsSupported
@@ -2477,6 +2494,24 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         )
     } else {
         captureTextOutput = nil
+    }
+
+    if displaySelection != nil {
+        if parsed.region != nil {
+            throw RegionShotError.invalidArguments("Display capture cannot be combined with rectangle coordinates.")
+        }
+
+        if applicationSelector != nil {
+            throw RegionShotError.invalidArguments("Display capture cannot be combined with app selectors (`--app`, `--app-name`, or `--pid`).")
+        }
+
+        if windowSelection != nil || windowCrop != nil {
+            throw RegionShotError.invalidArguments("Display capture cannot be combined with app window selection or `--window-crop`.")
+        }
+
+        if wantsWindowList || wantsVisibleWindowList || wantsVisibleWindowCapture || accessibilityMode != nil || menuBarMode != nil {
+            throw RegionShotError.invalidArguments("Display capture cannot be combined with app/window listing, visible-window, menu-bar, or Accessibility modes.")
+        }
     }
 
     if windowSelection != nil, applicationSelector == nil {
@@ -2743,7 +2778,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
         )
     }
 
-    if parsed.region == nil, applicationSelector == nil {
+    if parsed.region == nil, applicationSelector == nil, displaySelection == nil {
         throw RegionShotError.invalidArguments("Missing rectangle arguments.")
     }
 
@@ -2751,6 +2786,7 @@ func parse(arguments: [String]) throws -> CommandBehavior {
     return .capture(
         CaptureCommand(
             region: parsed.region,
+            displaySelection: displaySelection,
             outputURL: outputURL,
             applicationSelector: applicationSelector,
             windowSelection: windowSelection,
@@ -2811,10 +2847,10 @@ private func parseOptions(arguments: [String]) throws -> (values: [String: Strin
         let argument = arguments[index]
 
         switch argument {
-        case "--help", "-h", "--version", "--doctor", "--list-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--interactive", "--flat", "--list-menu-bar-items", "--get", "--get-element", "--wait-for-element", "--press", "--press-element", "--raise-window", "--raise", "--close-window", "--minimize-window", "--right", "--double", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only", "--raw", "--with-ascii", "--with-ocr":
+        case "--help", "-h", "--version", "--doctor", "--list-displays", "--all-displays", "--list-windows", "--list-visible-windows", "--visible-window", "--frontmost-window", "--list-accessibility-windows", "--list-ax-windows", "--list-elements", "--interactive", "--flat", "--list-menu-bar-items", "--get", "--get-element", "--wait-for-element", "--press", "--press-element", "--raise-window", "--raise", "--close-window", "--minimize-window", "--right", "--double", "--capture-menu", "--ascii-invert", "--ascii-no-ocr", "--ocr-only", "--raw", "--with-ascii", "--with-ocr":
             flags.insert(argument)
             index += 1
-        case "--x", "--y", "--width", "--height", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--wait-for-window", "--press-at", "--path", "--role", "--subrole", "--title", "--identifier", "--description", "--set-value", "--type", "--key", "--click", "--drag", "--scroll", "--move-window", "--resize-window", "--depth", "--max-children", "--roles", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language", "--format", "--quality", "--max-dimension":
+        case "--x", "--y", "--width", "--height", "--display", "--output", "--app", "--app-name", "--pid", "--find-app", "--timeout", "--window-index", "--window-name", "--window-crop", "--menu-bar-index", "--menu-bar-item", "--press-menu-item", "--element-at", "--wait-for-window", "--press-at", "--path", "--role", "--subrole", "--title", "--identifier", "--description", "--set-value", "--type", "--key", "--click", "--drag", "--scroll", "--move-window", "--resize-window", "--depth", "--max-children", "--roles", "--ascii", "--ascii-width", "--ascii-max-height", "--ascii-style", "--ascii-language", "--format", "--quality", "--max-dimension":
             let valueIndex = index + 1
             guard valueIndex < arguments.count else {
                 throw RegionShotError.invalidArguments("Missing value for \(argument).")
@@ -2992,6 +3028,34 @@ func parseApplicationSelector(values: [String: String]) throws -> ApplicationSel
     }
 
     return .processID(pid)
+}
+
+private func parseDisplayCaptureSelection(_ parsed: ParsedArguments) throws -> DisplayCaptureSelection? {
+    let wantsAllDisplays = parsed.flags.contains("--all-displays")
+    let rawDisplayID = parsed.values["--display"]
+
+    if wantsAllDisplays, rawDisplayID != nil {
+        throw RegionShotError.invalidArguments("Choose only one of `--display DISPLAY_ID` or `--all-displays`.")
+    }
+
+    if wantsAllDisplays {
+        return .allDisplays
+    }
+
+    guard let rawDisplayID else {
+        return nil
+    }
+
+    guard let trimmedDisplayID = normalizedArgumentValue(rawDisplayID) else {
+        throw RegionShotError.invalidArguments("`--display` requires a display id from `--list-displays`.")
+    }
+
+    let displayID = try parseInteger(trimmedDisplayID, flag: "--display")
+    guard displayID > 0, displayID <= Int(UInt32.max) else {
+        throw RegionShotError.invalidArguments("`--display` requires a positive 32-bit display id from `--list-displays`.")
+    }
+
+    return .displayID(CGDirectDisplayID(displayID))
 }
 
 private func parseFlaggedRegion(values: [String: String]) throws -> CaptureRegion? {
@@ -3572,6 +3636,48 @@ private func parseAsciiDimension(
     return dimension
 }
 
+func captureRegionForDisplayFrame(_ frame: CGRect) throws -> CaptureRegion {
+    try captureRegionForDisplayFrames([frame])
+}
+
+func captureRegionForDisplayFrames(_ frames: [CGRect]) throws -> CaptureRegion {
+    guard let firstFrame = frames.first else {
+        throw RegionShotError.captureFailed("No active displays were found.")
+    }
+
+    let unionFrame = frames.dropFirst().reduce(firstFrame) { partialResult, frame in
+        partialResult.union(frame)
+    }
+    let minX = Int(floor(unionFrame.minX))
+    let minY = Int(floor(unionFrame.minY))
+    let maxX = Int(ceil(unionFrame.maxX))
+    let maxY = Int(ceil(unionFrame.maxY))
+    let region = CaptureRegion(
+        x: minX,
+        y: minY,
+        width: maxX - minX,
+        height: maxY - minY
+    )
+
+    try validate(region: region)
+    return region
+}
+
+private func captureRegion(for displaySelection: DisplayCaptureSelection) throws -> CaptureRegion {
+    let frames = activeDisplayFrames()
+
+    switch displaySelection {
+    case .displayID(let displayID):
+        guard let frame = frames.first(where: { $0.id == displayID })?.frame else {
+            throw RegionShotError.invalidArguments("No active display has id \(displayID). Run `regionshot --list-displays` to see display ids.")
+        }
+
+        return try captureRegionForDisplayFrame(frame)
+    case .allDisplays:
+        return try captureRegionForDisplayFrames(frames.map(\.frame))
+    }
+}
+
 private func validate(region: CaptureRegion) throws {
     guard region.width > 0 else {
         throw RegionShotError.invalidRegion("Width must be greater than zero.")
@@ -3585,6 +3691,17 @@ private func validate(region: CaptureRegion) throws {
 private func capture(using command: CaptureCommand) async throws {
     let directoryURL = command.outputURL.deletingLastPathComponent()
     try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+
+    if let displaySelection = command.displaySelection {
+        let region = try captureRegion(for: displaySelection)
+        try await captureScreenRegion(
+            region: region,
+            outputURL: command.outputURL,
+            timeout: command.screenCaptureTimeout,
+            imageOutput: command.imageOutput
+        )
+        return
+    }
 
     if let applicationSelector = command.applicationSelector {
         let shareableContent = try await loadShareableContent(

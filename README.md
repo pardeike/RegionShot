@@ -52,6 +52,8 @@ again.
 
 ```bash
 regionshot 0 0 800 600
+regionshot --list-displays
+regionshot --display DISPLAY_ID --output ~/Desktop/display.png
 regionshot --find-app Terminal
 regionshot --app Terminal --list-accessibility-windows
 regionshot --app Terminal --window-index 0 --raise-window

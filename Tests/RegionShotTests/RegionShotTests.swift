@@ -236,6 +236,74 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
+    func testDisplayCaptureParsingSupportsDisplayID() throws {
+        let behavior = try parse(arguments: [
+            "--display", "42",
+            "--output", "/tmp/display.jpg",
+            "--timeout", "1.5",
+            "--format", "jpeg",
+            "--quality", "0.6",
+            "--max-dimension", "800",
+            "--with-ocr",
+            "--ascii-language", "sv-SE",
+        ])
+
+        guard case .capture(let command) = behavior else {
+            return XCTFail("Expected capture behavior.")
+        }
+
+        XCTAssertNil(command.region)
+        XCTAssertNil(command.applicationSelector)
+        XCTAssertEqual(command.displaySelection, .displayID(42))
+        XCTAssertEqual(command.outputURL.path, "/tmp/display.jpg")
+        XCTAssertEqual(command.screenCaptureTimeout, 1.5, accuracy: 0.001)
+        XCTAssertEqual(command.imageOutput.format, .jpeg)
+        XCTAssertEqual(command.imageOutput.jpegQuality, 0.6, accuracy: 0.001)
+        XCTAssertEqual(command.imageOutput.maxDimension, 800)
+
+        let textOutput = try XCTUnwrap(command.textOutput)
+        XCTAssertEqual(textOutput.outputMode, .ocrOnly)
+        XCTAssertEqual(textOutput.recognitionLanguages, ["sv-SE"])
+    }
+
+    func testDisplayCaptureParsingSupportsAllDisplays() throws {
+        let behavior = try parse(arguments: ["--all-displays", "--raw"])
+
+        guard case .capture(let command) = behavior else {
+            return XCTFail("Expected capture behavior.")
+        }
+
+        XCTAssertNil(command.region)
+        XCTAssertEqual(command.displaySelection, .allDisplays)
+        XCTAssertTrue(command.rawOutput)
+    }
+
+    func testDisplayCaptureRejectsMixedModes() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--display", "42", "--all-displays"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--display"))
+        }
+
+        XCTAssertThrowsError(
+            try parse(arguments: ["1", "2", "3", "4", "--display", "42"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("Display capture"))
+        }
+
+        XCTAssertThrowsError(
+            try parse(arguments: ["--all-displays", "--app", "Terminal"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("Display capture"))
+        }
+
+        XCTAssertThrowsError(
+            try parse(arguments: ["--display", "42", "--list-windows"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("Display capture"))
+        }
+    }
+
     func testPassiveCommandsDoNotSynchronizeAgentSupport() throws {
         XCTAssertFalse(try parse(arguments: []).shouldSynchronizeAgentSupport)
         XCTAssertFalse(try parse(arguments: ["--help"]).shouldSynchronizeAgentSupport)
@@ -1696,6 +1764,26 @@ final class RegionShotTests: XCTestCase {
             try encodeJSON(response),
             #"{"displays":[{"frame":{"height":600,"width":800,"x":-100,"y":20},"id":42,"isMain":true,"pixelHeight":1200,"pixelWidth":1600,"scale":2}]}"#
         )
+    }
+
+    func testDisplayFrameCaptureRegionRoundsOutwardAndUnionsFrames() throws {
+        let region = try captureRegionForDisplayFrames([
+            CGRect(x: -10.4, y: 5.2, width: 100.1, height: 50.1),
+            CGRect(x: 90.2, y: -4.8, width: 20.1, height: 10.1),
+        ])
+
+        XCTAssertEqual(region.x, -11)
+        XCTAssertEqual(region.y, -5)
+        XCTAssertEqual(region.width, 122)
+        XCTAssertEqual(region.height, 61)
+    }
+
+    func testDisplayFrameCaptureRegionRejectsEmptyDisplaySet() {
+        XCTAssertThrowsError(
+            try captureRegionForDisplayFrames([])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("No active displays"))
+        }
     }
 
     func testRegionShotVersionPrefersEnvironmentOverride() {
