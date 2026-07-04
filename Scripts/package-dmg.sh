@@ -45,7 +45,7 @@ swift build \
   --build-path "$build_dir"
 
 /usr/bin/install -m 755 "$build_dir/release/$product_name" "$payload_dir/$product_name"
-ditto "$project_dir/Codex" "$payload_dir/.regionshot-support/Codex"
+ditto "$project_dir/AgentSupport" "$payload_dir/.regionshot-support/AgentSupport"
 /usr/bin/install -m 644 "$project_dir/README.md" "$payload_dir/README.md"
 if [[ -d "$project_dir/docs" ]]; then
   ditto "$project_dir/docs" "$payload_dir/docs"
@@ -61,14 +61,14 @@ support_root="$install_dir/.regionshot-support"
 
 mkdir -p "$install_dir" "$support_root"
 /usr/bin/install -m 755 "$source_dir/regionshot" "$install_dir/regionshot"
-rm -rf "$support_root/Codex"
-ditto "$source_dir/.regionshot-support/Codex" "$support_root/Codex"
+rm -rf "$support_root/AgentSupport" "$support_root/Codex"
+ditto "$source_dir/.regionshot-support/AgentSupport" "$support_root/AgentSupport"
 if [[ -f "$source_dir/.regionshot-support/VERSION" ]]; then
   /usr/bin/install -m 644 "$source_dir/.regionshot-support/VERSION" "$support_root/VERSION"
 fi
 
 echo "Installed regionshot to $install_dir/regionshot"
-echo "Installed Codex support files to $support_root/Codex"
+echo "Installed agent support files to $support_root/AgentSupport"
 echo
 echo "If needed, add this to ~/.zprofile:"
 echo "export PATH=\"\$HOME/Scripts:\$PATH\""

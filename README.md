@@ -92,11 +92,13 @@ run:
 
 That writes `.build/private-bin/regionshot-private`.
 
-## Codex Support
+## Agent Support
 
-The install scripts also copy the bundled Codex support files. When those files
-are present, `regionshot` keeps `~/.codex/skills/regionshot` and the managed
-RegionShot block in `~/.codex/AGENTS.md` up to date.
+The install scripts also copy the bundled agent support files. When those files
+are present, `regionshot` keeps the RegionShot skill and managed instruction
+block up to date for Codex (`~/.codex/skills/regionshot` and
+`~/.codex/AGENTS.md`) and Claude Code (`~/.claude/skills/regionshot` and
+`~/.claude/CLAUDE.md`).
 
 If the support files are missing, the binary skips this step and still works.
 

@@ -228,19 +228,19 @@ final class RegionShotTests: XCTestCase {
         }
     }
 
-    func testPassiveCommandsDoNotSynchronizeCodexIntegration() throws {
-        XCTAssertFalse(try parse(arguments: []).shouldSynchronizeCodexIntegration)
-        XCTAssertFalse(try parse(arguments: ["--help"]).shouldSynchronizeCodexIntegration)
-        XCTAssertFalse(try parse(arguments: ["--version"]).shouldSynchronizeCodexIntegration)
-        XCTAssertFalse(try parse(arguments: ["doctor"]).shouldSynchronizeCodexIntegration)
-        XCTAssertFalse(try parse(arguments: ["clipboard"]).shouldSynchronizeCodexIntegration)
-        XCTAssertFalse(try parse(arguments: ["--list-displays"]).shouldSynchronizeCodexIntegration)
+    func testPassiveCommandsDoNotSynchronizeAgentSupport() throws {
+        XCTAssertFalse(try parse(arguments: []).shouldSynchronizeAgentSupport)
+        XCTAssertFalse(try parse(arguments: ["--help"]).shouldSynchronizeAgentSupport)
+        XCTAssertFalse(try parse(arguments: ["--version"]).shouldSynchronizeAgentSupport)
+        XCTAssertFalse(try parse(arguments: ["doctor"]).shouldSynchronizeAgentSupport)
+        XCTAssertFalse(try parse(arguments: ["clipboard"]).shouldSynchronizeAgentSupport)
+        XCTAssertFalse(try parse(arguments: ["--list-displays"]).shouldSynchronizeAgentSupport)
     }
 
-    func testOperationalCommandsSynchronizeCodexIntegration() throws {
-        XCTAssertTrue(try parse(arguments: ["--find-app", "RimWorld"]).shouldSynchronizeCodexIntegration)
-        XCTAssertTrue(try parse(arguments: ["activate", "--app", "Terminal"]).shouldSynchronizeCodexIntegration)
-        XCTAssertTrue(try parse(arguments: ["quit", "--app", "Terminal"]).shouldSynchronizeCodexIntegration)
+    func testOperationalCommandsSynchronizeAgentSupport() throws {
+        XCTAssertTrue(try parse(arguments: ["--find-app", "RimWorld"]).shouldSynchronizeAgentSupport)
+        XCTAssertTrue(try parse(arguments: ["activate", "--app", "Terminal"]).shouldSynchronizeAgentSupport)
+        XCTAssertTrue(try parse(arguments: ["quit", "--app", "Terminal"]).shouldSynchronizeAgentSupport)
     }
 
     func testAsciiArtParsing() throws {
@@ -1450,6 +1450,15 @@ final class RegionShotTests: XCTestCase {
             try encodeJSON(response),
             #"{"childCount":0,"role":"AXStaticText","title":"Decorative"}"#
         )
+    }
+
+    func testAgentSupportExcludesCodexOnlyFilesFromClaudeSkill() {
+        let prefixes: Set<String> = ["agents/"]
+
+        XCTAssertTrue(isExcludedRelativePath("agents", prefixes: prefixes))
+        XCTAssertTrue(isExcludedRelativePath("agents/openai.yaml", prefixes: prefixes))
+        XCTAssertFalse(isExcludedRelativePath("SKILL.md", prefixes: prefixes))
+        XCTAssertFalse(isExcludedRelativePath("references/usage.md", prefixes: prefixes))
     }
 
     func testStringifyAXAttributeValueNormalizesCommonStateValues() {

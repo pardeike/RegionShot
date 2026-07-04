@@ -6,9 +6,9 @@ product_name="regionshot"
 install_dir="${INSTALL_DIR:-$HOME/Scripts}"
 build_dir="$project_dir/.build/install"
 target_path="$install_dir/$product_name"
-support_source_dir="$project_dir/Codex"
+support_source_dir="$project_dir/AgentSupport"
 support_root_dir="$install_dir/.regionshot-support"
-support_target_dir="$support_root_dir/Codex"
+support_target_dir="$support_root_dir/AgentSupport"
 version="${VERSION:-}"
 
 if [[ -z "$version" ]]; then
@@ -31,7 +31,7 @@ fi
 mkdir -p "$install_dir"
 
 if [[ ! -d "$support_source_dir" ]]; then
-  echo "Missing Codex support files at $support_source_dir" >&2
+  echo "Missing agent support files at $support_source_dir" >&2
   exit 1
 fi
 
@@ -47,7 +47,7 @@ if [[ ! -f "$target_path" ]]; then
   exit 1
 fi
 
-rm -rf "$support_target_dir"
+rm -rf "$support_target_dir" "$support_root_dir/Codex"
 mkdir -p "$support_root_dir"
 ditto "$support_source_dir" "$support_target_dir"
 printf '%s\n' "$version" > "$support_root_dir/VERSION"
@@ -56,7 +56,7 @@ codesign --force --sign "$identity" "$target_path"
 codesign --verify --verbose "$target_path"
 
 echo "Installed $product_name to $target_path"
-echo "Installed Codex support files to $support_target_dir"
+echo "Installed agent support files to $support_target_dir"
 echo "Installed version metadata to $support_root_dir/VERSION"
 if [[ "$identity" == "-" ]]; then
   echo "Signed ad-hoc"

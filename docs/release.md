@@ -20,7 +20,7 @@ The DMG contains:
 - `Install RegionShot.command`
 - the README
 - the `docs/` folder
-- bundled Codex support files
+- bundled agent support files
 
 ## Notarization
 

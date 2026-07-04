@@ -14,8 +14,8 @@ struct RegionShot {
     static func main() async {
         do {
             let behavior = try parse(arguments: Array(CommandLine.arguments.dropFirst()))
-            if behavior.shouldSynchronizeCodexIntegration {
-                synchronizeCodexIntegrationIfAvailable()
+            if behavior.shouldSynchronizeAgentSupport {
+                synchronizeAgentSupportIfAvailable()
             }
 
             switch behavior {
@@ -95,7 +95,7 @@ enum CommandBehavior: Sendable {
     case inspectAccessibility(AccessibilityCommand)
     case menuBar(MenuBarCommand)
 
-    var shouldSynchronizeCodexIntegration: Bool {
+    var shouldSynchronizeAgentSupport: Bool {
         switch self {
         case .showHelp, .showVersion, .doctor, .clipboard, .listDisplays:
             return false
@@ -1195,9 +1195,13 @@ Exit codes:
   75 timed out operation
 """
 
-private let codexSkillName = "regionshot"
-private let codexManagedAgentsStartMarker = "<!-- regionshot-managed:start -->"
-private let codexManagedAgentsEndMarker = "<!-- regionshot-managed:end -->"
+private let agentSupportSkillName = "regionshot"
+private let agentSupportDirectoryName = "AgentSupport"
+private let legacyCodexSupportDirectoryName = "Codex"
+private let managedAgentInstructionsStartMarker = "<!-- regionshot-managed:start -->"
+private let managedAgentInstructionsEndMarker = "<!-- regionshot-managed:end -->"
+private let agentSupportDebugEnvironmentKey = "REGIONSHOT_DEBUG_AGENT_SYNC"
+private let legacyAgentSupportDebugEnvironmentKey = "REGIONSHOT_DEBUG_CODEX_SYNC"
 private let regionShotFallbackVersion = "1.0.0"
 private let regionShotVersionEnvironmentKey = "REGIONSHOT_VERSION"
 private let regionShotSupportDirectoryName = ".regionshot-support"
@@ -1552,25 +1556,27 @@ private func displayEntrySort(_ left: DisplayEntry, _ right: DisplayEntry) -> Bo
     return left.id < right.id
 }
 
-private func synchronizeCodexIntegrationIfAvailable() {
+private func synchronizeAgentSupportIfAvailable() {
     do {
-        try installOrUpdateCodexIntegrationIfAvailable()
+        try installOrUpdateAgentSupportIfAvailable()
     } catch {
-        if ProcessInfo.processInfo.environment["REGIONSHOT_DEBUG_CODEX_SYNC"] == "1" {
-            writeStandardError("warning: failed to sync Codex support files: \(error.localizedDescription)\n")
+        let environment = ProcessInfo.processInfo.environment
+        if environment[agentSupportDebugEnvironmentKey] == "1" ||
+            environment[legacyAgentSupportDebugEnvironmentKey] == "1" {
+            writeStandardError("warning: failed to sync RegionShot agent support files: \(error.localizedDescription)\n")
         }
     }
 }
 
-private func installOrUpdateCodexIntegrationIfAvailable() throws {
-    guard let codexSourceDirectory = findCodexSupportDirectory() else {
+private func installOrUpdateAgentSupportIfAvailable() throws {
+    guard let supportSourceDirectory = findAgentSupportDirectory() else {
         return
     }
 
-    let skillSourceDirectory = codexSourceDirectory
+    let skillSourceDirectory = supportSourceDirectory
         .appendingPathComponent("skills", isDirectory: true)
-        .appendingPathComponent(codexSkillName, isDirectory: true)
-    let pointerSourceURL = codexSourceDirectory.appendingPathComponent("AGENTS.pointer.md")
+        .appendingPathComponent(agentSupportSkillName, isDirectory: true)
+    let pointerSourceURL = supportSourceDirectory.appendingPathComponent("AGENTS.pointer.md")
 
     let fileManager = FileManager.default
     guard
@@ -1582,21 +1588,34 @@ private func installOrUpdateCodexIntegrationIfAvailable() throws {
 
     let codexHomeDirectory = fileManager.homeDirectoryForCurrentUser
         .appendingPathComponent(".codex", isDirectory: true)
-    let skillDestinationDirectory = codexHomeDirectory
+    let codexSkillDestinationDirectory = codexHomeDirectory
         .appendingPathComponent("skills", isDirectory: true)
-        .appendingPathComponent(codexSkillName, isDirectory: true)
+        .appendingPathComponent(agentSupportSkillName, isDirectory: true)
     let agentsDestinationURL = codexHomeDirectory.appendingPathComponent("AGENTS.md")
 
-    try syncDirectoryIfNeeded(from: skillSourceDirectory, to: skillDestinationDirectory)
+    let claudeHomeDirectory = fileManager.homeDirectoryForCurrentUser
+        .appendingPathComponent(".claude", isDirectory: true)
+    let claudeSkillDestinationDirectory = claudeHomeDirectory
+        .appendingPathComponent("skills", isDirectory: true)
+        .appendingPathComponent(agentSupportSkillName, isDirectory: true)
+    let claudeDestinationURL = claudeHomeDirectory.appendingPathComponent("CLAUDE.md")
+
+    try syncDirectoryIfNeeded(from: skillSourceDirectory, to: codexSkillDestinationDirectory)
+    try syncDirectoryIfNeeded(
+        from: skillSourceDirectory,
+        to: claudeSkillDestinationDirectory,
+        excludingRelativePathPrefixes: ["agents/"]
+    )
 
     let pointerBody = try String(contentsOf: pointerSourceURL, encoding: .utf8)
-    try upsertManagedAgentsPointer(pointerBody, at: agentsDestinationURL)
+    try upsertManagedAgentInstructions(pointerBody, at: agentsDestinationURL)
+    try upsertManagedAgentInstructions(pointerBody, at: claudeDestinationURL)
 }
 
-private func findCodexSupportDirectory() -> URL? {
+private func findAgentSupportDirectory() -> URL? {
     let fileManager = FileManager.default
 
-    for candidate in codexSupportCandidates() {
+    for candidate in agentSupportCandidates() {
         let standardizedCandidate = candidate.standardizedFileURL
         guard fileManager.fileExists(atPath: standardizedCandidate.path) else {
             continue
@@ -1604,7 +1623,7 @@ private func findCodexSupportDirectory() -> URL? {
 
         let skillDirectory = standardizedCandidate
             .appendingPathComponent("skills", isDirectory: true)
-            .appendingPathComponent(codexSkillName, isDirectory: true)
+            .appendingPathComponent(agentSupportSkillName, isDirectory: true)
         let skillFileURL = skillDirectory.appendingPathComponent("SKILL.md")
         let pointerFileURL = standardizedCandidate.appendingPathComponent("AGENTS.pointer.md")
 
@@ -1616,23 +1635,19 @@ private func findCodexSupportDirectory() -> URL? {
     return nil
 }
 
-private func codexSupportCandidates() -> [URL] {
+private func agentSupportCandidates() -> [URL] {
     var candidates: [URL] = []
 
     if let executableDirectory = currentExecutableURL()?.deletingLastPathComponent() {
-        candidates.append(
-            executableDirectory
-                .appendingPathComponent(".regionshot-support", isDirectory: true)
-                .appendingPathComponent("Codex", isDirectory: true)
-        )
-        appendAncestorCodexDirectories(startingAt: executableDirectory, to: &candidates)
+        appendInstalledAgentSupportDirectories(startingAt: executableDirectory, to: &candidates)
+        appendAncestorAgentSupportDirectories(startingAt: executableDirectory, to: &candidates)
     }
 
     let currentDirectory = URL(
         fileURLWithPath: FileManager.default.currentDirectoryPath,
         isDirectory: true
     )
-    appendAncestorCodexDirectories(startingAt: currentDirectory, to: &candidates)
+    appendAncestorAgentSupportDirectories(startingAt: currentDirectory, to: &candidates)
 
     var deduplicated: [URL] = []
     var seenPaths: Set<String> = []
@@ -1646,12 +1661,19 @@ private func codexSupportCandidates() -> [URL] {
     return deduplicated
 }
 
-private func appendAncestorCodexDirectories(startingAt directory: URL, to candidates: inout [URL]) {
+private func appendInstalledAgentSupportDirectories(startingAt directory: URL, to candidates: inout [URL]) {
+    let supportDirectory = directory.appendingPathComponent(regionShotSupportDirectoryName, isDirectory: true)
+    candidates.append(supportDirectory.appendingPathComponent(agentSupportDirectoryName, isDirectory: true))
+    candidates.append(supportDirectory.appendingPathComponent(legacyCodexSupportDirectoryName, isDirectory: true))
+}
+
+private func appendAncestorAgentSupportDirectories(startingAt directory: URL, to candidates: inout [URL]) {
     var currentPath = directory.standardizedFileURL.path
 
     while true {
         let currentDirectoryURL = URL(fileURLWithPath: currentPath, isDirectory: true)
-        candidates.append(currentDirectoryURL.appendingPathComponent("Codex", isDirectory: true))
+        candidates.append(currentDirectoryURL.appendingPathComponent(agentSupportDirectoryName, isDirectory: true))
+        candidates.append(currentDirectoryURL.appendingPathComponent(legacyCodexSupportDirectoryName, isDirectory: true))
 
         let parentPath = (currentPath as NSString).deletingLastPathComponent
         if parentPath.isEmpty || parentPath == currentPath {
@@ -1681,10 +1703,18 @@ private func currentExecutableURL() -> URL? {
         .standardizedFileURL
 }
 
-private func syncDirectoryIfNeeded(from sourceDirectory: URL, to destinationDirectory: URL) throws {
+private func syncDirectoryIfNeeded(
+    from sourceDirectory: URL,
+    to destinationDirectory: URL,
+    excludingRelativePathPrefixes: Set<String> = []
+) throws {
     let fileManager = FileManager.default
 
-    if try directoriesMatch(sourceDirectory, destinationDirectory) {
+    if try directoriesMatch(
+        sourceDirectory,
+        destinationDirectory,
+        excludingRelativePathPrefixes: excludingRelativePathPrefixes
+    ) {
         return
     }
 
@@ -1697,10 +1727,25 @@ private func syncDirectoryIfNeeded(from sourceDirectory: URL, to destinationDire
         try fileManager.removeItem(at: destinationDirectory)
     }
 
-    try fileManager.copyItem(at: sourceDirectory, to: destinationDirectory)
+    try fileManager.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+
+    for relativePath in try regularFiles(in: sourceDirectory)
+        where !isExcludedRelativePath(relativePath, prefixes: excludingRelativePathPrefixes) {
+        let sourceFileURL = sourceDirectory.appendingPathComponent(relativePath)
+        let destinationFileURL = destinationDirectory.appendingPathComponent(relativePath)
+        try fileManager.createDirectory(
+            at: destinationFileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try fileManager.copyItem(at: sourceFileURL, to: destinationFileURL)
+    }
 }
 
-private func directoriesMatch(_ sourceDirectory: URL, _ destinationDirectory: URL) throws -> Bool {
+private func directoriesMatch(
+    _ sourceDirectory: URL,
+    _ destinationDirectory: URL,
+    excludingRelativePathPrefixes: Set<String> = []
+) throws -> Bool {
     let fileManager = FileManager.default
     var isDirectory: ObjCBool = false
 
@@ -1709,6 +1754,7 @@ private func directoriesMatch(_ sourceDirectory: URL, _ destinationDirectory: UR
     }
 
     let sourceFiles = try regularFiles(in: sourceDirectory)
+        .filter { !isExcludedRelativePath($0, prefixes: excludingRelativePathPrefixes) }
     let destinationFiles = try regularFiles(in: destinationDirectory)
     guard sourceFiles == destinationFiles else {
         return false
@@ -1724,6 +1770,13 @@ private func directoriesMatch(_ sourceDirectory: URL, _ destinationDirectory: UR
     }
 
     return true
+}
+
+func isExcludedRelativePath(_ relativePath: String, prefixes: Set<String>) -> Bool {
+    prefixes.contains { prefix in
+        let directoryName = prefix.hasSuffix("/") ? String(prefix.dropLast()) : prefix
+        return relativePath == directoryName || relativePath.hasPrefix(prefix)
+    }
 }
 
 private func regularFiles(in directory: URL) throws -> [String] {
@@ -1754,16 +1807,16 @@ private func regularFiles(in directory: URL) throws -> [String] {
     return files.sorted()
 }
 
-private func upsertManagedAgentsPointer(_ pointerBody: String, at agentsURL: URL) throws {
+private func upsertManagedAgentInstructions(_ pointerBody: String, at agentsURL: URL) throws {
     let trimmedPointerBody = pointerBody.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedPointerBody.isEmpty else {
         return
     }
 
     let managedBlock = """
-    \(codexManagedAgentsStartMarker)
+    \(managedAgentInstructionsStartMarker)
     \(trimmedPointerBody)
-    \(codexManagedAgentsEndMarker)
+    \(managedAgentInstructionsEndMarker)
     """
 
     let fileManager = FileManager.default
@@ -1815,11 +1868,11 @@ private func updatedAgentsContents(
 }
 
 private func managedAgentsRange(in contents: String) -> Range<String.Index>? {
-    guard let startRange = contents.range(of: codexManagedAgentsStartMarker) else {
+    guard let startRange = contents.range(of: managedAgentInstructionsStartMarker) else {
         return nil
     }
 
-    guard let endRange = contents.range(of: codexManagedAgentsEndMarker, range: startRange.upperBound..<contents.endIndex) else {
+    guard let endRange = contents.range(of: managedAgentInstructionsEndMarker, range: startRange.upperBound..<contents.endIndex) else {
         return nil
     }
 
