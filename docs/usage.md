@@ -143,6 +143,7 @@ menu item by title, description, or identifier.
 regionshot --app "System Settings" --list-elements
 regionshot --app "System Settings" --list-elements --depth 2 --max-children 12
 regionshot --app "System Settings" --get --role AXTextField --title Name
+regionshot --app "System Settings" --wait-for-element --role AXButton --title Done --timeout 10
 regionshot --app "System Settings" --set-value "Andreas" --role AXTextField --title Name
 regionshot --app "System Settings" --press --role AXButton --title Done
 regionshot --app "System Settings" --press-at 14,14
@@ -161,6 +162,10 @@ expand the tree.
 `--get` finds one accessibility element using selector fields and returns its
 full JSON attributes without performing an action. It uses the same selector
 fields and matching rules as `--press`.
+
+`--wait-for-element` polls until exactly one matching accessibility element is
+available, then returns it using the same JSON shape as `--get`. Use
+`--timeout SECONDS` to adjust the wait.
 
 `--set-value TEXT` finds one accessibility element using selector fields, writes
 the element's `AXValue`, and returns the updated element. Empty text is valid and

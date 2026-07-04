@@ -465,6 +465,45 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(selector.elementDescription, "Search field")
     }
 
+    func testAccessibilityWaitForElementParsingUsesTimeout() throws {
+        let behavior = try parse(arguments: [
+            "--app", "Terminal",
+            "--wait-for-element",
+            "--role", "AXButton",
+            "--title", "Done",
+            "--timeout", "2.5",
+        ])
+
+        guard case .inspectAccessibility(let command) = behavior else {
+            return XCTFail("Expected accessibility inspection behavior.")
+        }
+
+        guard case .waitForElement(let selector) = command.mode else {
+            return XCTFail("Expected accessibility wait-for-element mode.")
+        }
+
+        XCTAssertEqual(command.timeout, 2.5, accuracy: 0.001)
+        XCTAssertEqual(selector.role, "AXButton")
+        XCTAssertEqual(selector.title, "Done")
+    }
+
+    func testAccessibilityWaitForElementRequiresSelector() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--wait-for-element"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--wait-for-element"))
+        }
+    }
+
+    func testAccessibilityWaitForElementRejectsMixedAccessibilityMode() {
+        XCTAssertThrowsError(
+            try parse(arguments: ["--app", "Terminal", "--wait-for-element", "--role", "AXButton", "--press-at", "1,1"])
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("--wait-for-element"))
+            XCTAssertTrue(String(describing: error).contains("--press-at"))
+        }
+    }
+
     func testAccessibilitySetValueParsing() throws {
         let behavior = try parse(arguments: [
             "--app", "Terminal",
@@ -535,6 +574,7 @@ final class RegionShotTests: XCTestCase {
             try parse(arguments: ["--app", "Terminal", "--title", "Done"])
         ) { error in
             XCTAssertTrue(String(describing: error).contains("--get"))
+            XCTAssertTrue(String(describing: error).contains("--wait-for-element"))
             XCTAssertTrue(String(describing: error).contains("--set-value"))
             XCTAssertTrue(String(describing: error).contains("--press"))
         }
