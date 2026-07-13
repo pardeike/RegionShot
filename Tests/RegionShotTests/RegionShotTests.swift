@@ -2200,6 +2200,33 @@ final class RegionShotTests: XCTestCase {
         XCTAssertEqual(lines, ["@@", "  "])
     }
 
+    func testCaptureCanvasPreservesImageOrientation() throws {
+        let sourceImage = try makeGrayscaleImage(
+            width: 4,
+            height: 4,
+            pixels: [
+                0, 0, 255, 255,
+                0, 0, 255, 255,
+                255, 255, 0, 0,
+                255, 255, 0, 0,
+            ]
+        )
+        let canvas = try makeCaptureCanvas(size: CGSize(width: 4, height: 4))
+        canvas.interpolationQuality = .none
+        canvas.draw(sourceImage, in: CGRect(x: 0, y: 0, width: 4, height: 4))
+
+        guard let compositedImage = canvas.makeImage() else {
+            return XCTFail("Expected the capture canvas to produce an image.")
+        }
+
+        let rendered = try renderAsciiArt(
+            from: compositedImage,
+            options: AsciiArtOptions(width: 4, maxHeight: 2, invert: false)
+        )
+
+        XCTAssertEqual(rendered.text.components(separatedBy: "\n"), ["@@  ", "  @@"])
+    }
+
     func testAsciiRendererCanInvertLightness() throws {
         let image = try makeGrayscaleImage(
             width: 2,

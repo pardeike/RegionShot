@@ -8326,23 +8326,7 @@ private func captureDisplayRegion(
         height: max(1, ceil(regionRect.height * canvasScale))
     )
 
-    guard
-        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-        let context = CGContext(
-            data: nil,
-            width: Int(canvasSize.width),
-            height: Int(canvasSize.height),
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        )
-    else {
-        throw RegionShotError.captureFailed("Failed to allocate an image buffer for the display capture.")
-    }
-
-    context.translateBy(x: 0, y: canvasSize.height)
-    context.scaleBy(x: 1, y: -1)
+    let context = try makeCaptureCanvas(size: canvasSize)
 
     for plan in plans {
         let filter = SCContentFilter(display: plan.display, excludingWindows: [])
@@ -8355,7 +8339,11 @@ private func captureDisplayRegion(
             width: plan.intersectionRect.width,
             height: plan.intersectionRect.height
         )
-        configuration.scalesToFit = true
+        // The requested output size already matches sourceRect at the display's
+        // pixel scale. On macOS 27, asking ScreenCaptureKit to scale this 1:1
+        // capture mirrors window surfaces in place while leaving their screen
+        // coordinates unchanged.
+        configuration.scalesToFit = false
         configuration.showsCursor = false
         configuration.ignoreShadowsDisplay = true
 
@@ -8412,23 +8400,7 @@ private func captureApplicationRegion(
         height: max(1, ceil(regionRect.height * canvasScale))
     )
 
-    guard
-        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-        let context = CGContext(
-            data: nil,
-            width: Int(canvasSize.width),
-            height: Int(canvasSize.height),
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        )
-    else {
-        throw RegionShotError.captureFailed("Failed to allocate an image buffer for the app-filtered capture.")
-    }
-
-    context.translateBy(x: 0, y: canvasSize.height)
-    context.scaleBy(x: 1, y: -1)
+    let context = try makeCaptureCanvas(size: canvasSize)
 
     for plan in plans {
         let filter = SCContentFilter(display: plan.display, including: [application], exceptingWindows: [])
@@ -8443,7 +8415,8 @@ private func captureApplicationRegion(
             width: plan.intersectionRect.width,
             height: plan.intersectionRect.height
         )
-        configuration.scalesToFit = true
+        // See captureDisplayRegion: this is already a 1:1 source-rect capture.
+        configuration.scalesToFit = false
         configuration.showsCursor = false
         configuration.backgroundColor = clearBackgroundColor
         configuration.ignoreShadowsDisplay = true
@@ -8476,6 +8449,27 @@ private func captureApplicationRegion(
     }
 
     try writeImage(image, to: outputURL, options: imageOutput)
+}
+
+func makeCaptureCanvas(size: CGSize) throws -> CGContext {
+    // Keep the identity CTM. ScreenCaptureKit images already draw in encoded pixel
+    // orientation; flipping this canvas rotates composited captures for raw decoders.
+    guard
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+        let context = CGContext(
+            data: nil,
+            width: Int(size.width),
+            height: Int(size.height),
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )
+    else {
+        throw RegionShotError.captureFailed("Failed to allocate an image buffer for the capture.")
+    }
+
+    return context
 }
 
 private func planDisplayRegionCaptures(
